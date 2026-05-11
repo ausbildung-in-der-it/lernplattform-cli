@@ -1,0 +1,39 @@
+{
+  "name": "@ausbildung-in-der-it/lernplattform-cli",
+  "version": "0.1.0",
+  "description": "Command-line interface fuer die ausbildung-in-der-it.de Lernplattform",
+  "type": "module",
+  "bin": {
+    "lernplattform": "bin/lernplattform.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    ".env.example"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepare": "tsup",
+    "smoke": "node bin/lernplattform.mjs --help"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ausbildung-in-der-it/lernplattform-cli.git"
+  },
+  "author": "Noel Lang",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "glob": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.9.3"
+  }
+}
