@@ -1,5 +1,5 @@
 {
-  "name": "@ausbildung-in-der-it/lernplattform-cli",
+  "name": "lernplattform-cli",
   "version": "0.1.0",
   "description": "Command-line interface fuer die ausbildung-in-der-it.de Lernplattform",
   "type": "module",
