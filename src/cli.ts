@@ -37,7 +37,7 @@ const handlers: Record<string, Handler> = {
   'image-upload': runImageUpload,
 };
 
-const HELP_TEXT = `lernplattform - CLI fuer die ausbildung-in-der-it.de Lernplattform
+const HELP_TEXT = `lernplattform - CLI für die ausbildung-in-der-it.de Lernplattform
 
 USAGE
   lernplattform <bereich> <aktion> [args...]
@@ -57,7 +57,7 @@ BEREICHE
   image-upload              Bilder zu AIDI hochladen
 
 HILFE
-  lernplattform <bereich> --help    Hilfe fuer einen Bereich
+  lernplattform <bereich> --help    Hilfe für einen Bereich
   lernplattform --version           Version anzeigen
 
 UMGEBUNG

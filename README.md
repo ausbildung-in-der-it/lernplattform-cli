@@ -1,18 +1,18 @@
 # lernplattform-cli
 
-Command-Line-Interface fuer die [ausbildung-in-der-it.de](https://app.ausbildung-in-der-it.de) Lernplattform. Verwaltet Lessons, Module, Blocks, Lernpfade, Practice Tasks, Ratings und Discussions ueber die offizielle Content-CLI-API.
+Command-Line-Interface für die [ausbildung-in-der-it.de](https://app.ausbildung-in-der-it.de) Lernplattform. Verwaltet Lessons, Module, Blocks, Lernpfade, Practice Tasks, Ratings und Discussions über die offizielle Content-CLI-API.
 
 ## Installation
 
-### Global ueber GitHub
+### Global über GitHub
 
 ```bash
 npm install -g github:ausbildung-in-der-it/lernplattform-cli
 ```
 
-Nach der Installation steht der Befehl `lernplattform` global zur Verfuegung.
+Nach der Installation steht der Befehl `lernplattform` global zur Verfügung.
 
-### Lokal fuer Entwicklung
+### Lokal für Entwicklung
 
 ```bash
 git clone git@github.com:ausbildung-in-der-it/lernplattform-cli.git
