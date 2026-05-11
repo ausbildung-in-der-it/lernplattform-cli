@@ -15,7 +15,6 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "prepare": "tsup",
     "smoke": "node bin/lernplattform.mjs --help"
   },
   "engines": {
