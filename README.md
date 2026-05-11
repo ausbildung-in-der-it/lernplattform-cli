@@ -4,15 +4,17 @@ Command-Line-Interface für die [ausbildung-in-der-it.de](https://app.ausbildung
 
 ## Installation
 
-### Global über GitHub
+### Global über GitHub (empfohlen, via bun)
 
 ```bash
-npm install -g github:ausbildung-in-der-it/lernplattform-cli
+bun install -g github:ausbildung-in-der-it/lernplattform-cli
 ```
 
 Nach der Installation steht der Befehl `lernplattform` global zur Verfügung.
 
-### Lokal für Entwicklung
+> **Warum bun statt npm?** `npm install -g github:...` hat aktuell einen bekannten Bug: das Package wird als Symlink in das npm-Cache-tmp-Verzeichnis gelegt, das nach dem Install gelöscht wird. Resultat: kaputter Symlink. `bun install -g github:...` funktioniert sauber. Wer bun nicht hat: `curl -fsSL https://bun.sh/install | bash`.
+
+### Alternative: Lokal klonen und linken
 
 ```bash
 git clone git@github.com:ausbildung-in-der-it/lernplattform-cli.git
@@ -20,6 +22,12 @@ cd lernplattform-cli
 npm install
 npm run build
 npm link
+```
+
+### Update
+
+```bash
+bun install -g github:ausbildung-in-der-it/lernplattform-cli   # nochmal ausfuehren, holt main
 ```
 
 ## Konfiguration
