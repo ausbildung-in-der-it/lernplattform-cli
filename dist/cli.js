@@ -511,7 +511,7 @@ function printHelp() {
   console.log(`Lesson CLI - Manage lessons
 
 USAGE:
-  npm run lesson:<operation> [args] [flags]
+  lernplattform lesson <operation> [args] [flags]
 
 OPERATIONS:
   list                List all lessons (paginated)
@@ -524,19 +524,19 @@ OPERATIONS:
 EXAMPLES:
 
   LIST LESSONS:
-    npm run lesson:list
-    npm run lesson:list -- --page=2 --per-page=10
+    lernplattform lesson list
+    lernplattform lesson list --page=2 --per-page=10
 
   GET LESSON:
-    npm run lesson:get sql-basics
-    npm run lesson:get sql-basics -- --save-to-file
+    lernplattform lesson get sql-basics
+    lernplattform lesson get sql-basics --save-to-file
 
   GET MDX CONTENT:
-    npm run lesson:mdx einfuehrung-in-projekte
-    npm run lesson:mdx sql-basics > lesson.mdx
+    lernplattform lesson mdx einfuehrung-in-projekte
+    lernplattform lesson mdx sql-basics > lesson.mdx
 
   CREATE LESSON (Basic):
-    npm run lesson:create \\
+    lernplattform lesson create \\
       --title="SQL Einfuehrung" \\
       --slug="sql-einfuehrung" \\
       --module-id=122 \\
@@ -544,7 +544,7 @@ EXAMPLES:
       --xp=100
 
   CREATE LESSON (With all fields):
-    npm run lesson:create \\
+    lernplattform lesson create \\
       --title="SQL Joins" \\
       --slug="sql-joins" \\
       --module-id=122 \\
@@ -555,7 +555,7 @@ EXAMPLES:
       --position=3
 
   CREATE LESSON WITH BLOCKS (using stdin - RECOMMENDED):
-    npm run lesson:create \\
+    lernplattform lesson create \\
       --title="OOP Grundlagen" \\
       --slug="oop-grundlagen" \\
       --module-id=122 \\
@@ -596,7 +596,7 @@ EXAMPLES:
     EOF
 
   CREATE LESSON WITH BLOCKS (using Base64):
-    npm run lesson:create \\
+    lernplattform lesson create \\
       --title="Test Lesson" \\
       --slug="test-lesson" \\
       --module-id=122 \\
@@ -605,18 +605,18 @@ EXAMPLES:
       --blocks-base64="$(echo '[{"type":"textBlock","section":"hook","data":{"title":"Test","content":"Content"}}]' | base64)"
 
   UPDATE LESSON (Basic fields):
-    npm run lesson:update sql-basics -- --title="SQL Basics Updated"
-    npm run lesson:update sql-basics -- --title="New Title" --xp=250 --status="published"
+    lernplattform lesson update sql-basics --title="SQL Basics Updated"
+    lernplattform lesson update sql-basics --title="New Title" --xp=250 --status="published"
 
   UPDATE LESSON (With content):
-    npm run lesson:update sql-basics -- --content-stdin <<'EOF'
+    lernplattform lesson update sql-basics --content-stdin <<'EOF'
     # SQL Basics
 
     This lesson covers SQL fundamentals...
     EOF
 
   UPDATE LESSON BLOCKS (REPLACES all blocks):
-    npm run lesson:update sql-basics -- --blocks-stdin <<'EOF'
+    lernplattform lesson update sql-basics --blocks-stdin <<'EOF'
     [
       {"type":"textBlock","section":"hook","data":{"title":"Updated Hook","content":"New intro..."}},
       {"type":"textBlock","section":"knowledge1","data":{"title":"New Content","content":"..."}}
@@ -624,7 +624,7 @@ EXAMPLES:
     EOF
 
   DELETE LESSON:
-    npm run lesson:delete old-lesson -- --confirm
+    lernplattform lesson delete old-lesson --confirm
 
 REQUIRED FLAGS (for create):
   --title="..."         Lesson title
@@ -698,29 +698,53 @@ BLOCKS FORMAT:
 
 JSON INPUT METHODS (to avoid shell escaping issues):
   1. stdin with heredoc (RECOMMENDED):
-     npm run lesson:create ... --blocks-stdin <<'EOF'
+     lernplattform lesson create ... --blocks-stdin <<'EOF'
      [...]
      EOF
 
   2. Base64 encoding:
-     npm run lesson:create ... --blocks-base64="$(echo '[...]' | base64)"
+     lernplattform lesson create ... --blocks-base64="$(echo '[...]' | base64)"
 
   3. Pipe from file:
-     cat blocks.json | npm run lesson:create ... --blocks-stdin
+     cat blocks.json | lernplattform lesson create ... --blocks-stdin
 
   Priority: stdin > base64 > normal
 
+WORKFLOWS (verkettet mit anderen Bereichen):
+
+  Discovery -> Read -> Export (Lesson per Suche finden):
+    # 'search' liefert Laravel-Paginator. Lesson-Treffer in .data:
+    SLUG=$(lernplattform search "datenbanken" 2>/dev/null \\
+      | jq -r '.data[] | select(.type=="lesson") | .slug' | head -1)
+    lernplattform lesson get "$SLUG" | jq '{id, title, type, blocks: (.blocks|length)}'
+    # MDX-Export funktioniert nur fuer Lessons vom Typ 'mdx' oder 'text':
+    #   lernplattform lesson mdx "$SLUG" > "$SLUG.mdx"
+
+  Lesson neu mit Modul-Kontext (Modul vorher per Slug holen):
+    MODULE_ID=$(lernplattform module get relationale-datenbanken 2>/dev/null | jq '.id')
+    lernplattform lesson create \\
+      --title="SQL Subqueries" --slug="sql-subqueries" \\
+      --module-id="$MODULE_ID" --type=interactive --xp=150
+
+  Block-Anzahl pruefen vor Update (REPLACE-Semantik!):
+    lernplattform lesson get sql-basics --save-to-file       # Backup nach backups/
+    lernplattform blocks list sql-basics | jq 'length'       # vorher zaehlen
+    lernplattform lesson update sql-basics --blocks-stdin <<'EOF'
+    [ ... vollstaendige neue Blockliste ... ]
+    EOF
+
 OUTPUT:
-  All commands return raw JSON from the API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
   Use jq for custom formatting:
-    npm run lesson:list | jq '.data[] | "\\(.id) \\(.title)"'
-    npm run lesson:get sql-basics | jq '.blocks | length'
+    lernplattform lesson list | jq '.data[] | "\\(.id) \\(.title)"'
+    lernplattform lesson get sql-basics | jq '.blocks | length'
 
 NOTES:
   - XP is REQUIRED when creating lessons (API enforces this)
   - Status defaults to "draft" if not specified
-  - Blocks can be added during creation or later via blocks:create
-  - Updating blocks REPLACES all existing blocks (use blocks:update for individual changes)
+  - Blocks koennen mit create direkt mitgegeben oder spaeter via 'lernplattform blocks create' angelegt werden
+  - 'lernplattform lesson update --blocks-stdin' ERSETZT alle Blocks. Fuer einzelne Aenderungen 'lernplattform blocks update' verwenden.
   - Use --save-to-file with get to backup before making changes
 `);
 }
@@ -994,7 +1018,7 @@ function printHelp2() {
   console.log(`Module CLI - Manage modules
 
 USAGE:
-  npm run module:<operation> [args] [flags]
+  lernplattform module <operation> [args] [flags]
 
 OPERATIONS:
   list                List all modules (paginated)
@@ -1007,21 +1031,21 @@ EXAMPLES:
 
   List Operations:
     # First page (default: 20 items)
-    npm run module:list
+    lernplattform module list
 
     # Page 2 with 10 items
-    npm run module:list -- --page=2 --per-page=10
+    lernplattform module list --page=2 --per-page=10
 
   Get Operations:
     # Get module with all lessons
-    npm run module:get relationale-datenbanken
+    lernplattform module get relationale-datenbanken
 
     # Get and save to backups/
-    npm run module:get relationale-datenbanken -- --save-to-file
+    lernplattform module get relationale-datenbanken --save-to-file
 
   Create Operations:
     # Create draft module
-    npm run module:create \\
+    lernplattform module create \\
       --title="Neues Modul" \\
       --slug="neues-modul" \\
       --type="normal" \\
@@ -1029,7 +1053,7 @@ EXAMPLES:
       --description="Modul Beschreibung"
 
     # Create published exam prep module
-    npm run module:create \\
+    lernplattform module create \\
       --title="Pruefungsvorbereitung SQL" \\
       --slug="pruefung-sql" \\
       --type="exam_prep" \\
@@ -1038,20 +1062,20 @@ EXAMPLES:
 
   Update Operations:
     # Update title only
-    npm run module:update relationale-datenbanken -- --title="Neue Datenbanken"
+    lernplattform module update relationale-datenbanken --title="Neue Datenbanken"
 
     # Update multiple fields
-    npm run module:update test-modul \\
-      -- --title="Updated Title" \\
+    lernplattform module update test-modul \\
+      --title="Updated Title" \\
       --description="Updated description" \\
       --status="published"
 
     # Change position
-    npm run module:update test-modul -- --position=5
+    lernplattform module update test-modul --position=5
 
   Delete Operations:
     # Delete module (requires --confirm for safety)
-    npm run module:delete old-module -- --confirm
+    lernplattform module delete old-module --confirm
 
     WARNING: This will permanently delete the module and all its lessons!
 
@@ -1085,8 +1109,8 @@ FLAGS:
 OUTPUT:
   All commands return raw JSON from the API.
   Use jq for custom formatting:
-    npm run module:list | jq '.data[] | "\\(.id) \\(.title)"'
-    npm run module:get slug | jq '.lessons | length'
+    lernplattform module list | jq '.data[] | "\\(.id) \\(.title)"'
+    lernplattform module get slug | jq '.lessons | length'
 `);
 }
 
@@ -1436,7 +1460,7 @@ function printHelp3() {
   console.log(`Blocks CLI - Manage lesson blocks
 
 USAGE:
-  npm run blocks:<operation> [args] [flags]
+  lernplattform blocks <operation> [args] [flags]
 
 OPERATIONS:
   list <lesson-slug>              List all blocks in a lesson
@@ -1450,19 +1474,19 @@ OPERATIONS:
 EXAMPLES:
 
   # List blocks
-  npm run blocks:list sql-grundlagen
+  lernplattform blocks list sql-grundlagen
 
   # Get specific block
-  npm run blocks:get sql-grundlagen abc123defg
+  lernplattform blocks get sql-grundlagen abc123defg
 
   # Create text block
-  npm run blocks:create sql-grundlagen \\
+  lernplattform blocks create sql-grundlagen \\
     --type="textBlock" \\
     --section="knowledge1" \\
     --data='{"title":"SQL Einf\xFChrung","content":"SQL ist..."}'
 
   # Create quiz block (full example)
-  npm run blocks:create sql-grundlagen \\
+  lernplattform blocks create sql-grundlagen \\
     --type="interactiveQuiz" \\
     --section="quiz1" \\
     --data='{
@@ -1480,27 +1504,27 @@ EXAMPLES:
     }'
 
   # Create with position
-  npm run blocks:create sql-grundlagen \\
+  lernplattform blocks create sql-grundlagen \\
     --type="textBlock" \\
     --section="knowledge2" \\
     --data='{"title":"Titel","content":"Inhalt"}' \\
     --position=5
 
   # Update block data
-  npm run blocks:update sql-grundlagen abc123defg \\
+  lernplattform blocks update sql-grundlagen abc123defg \\
     --data='{"title":"Updated Title","content":"Updated content"}'
 
   # Change block section
-  npm run blocks:update sql-grundlagen abc123defg -- --section="knowledge2"
+  lernplattform blocks update sql-grundlagen abc123defg --section="knowledge2"
 
   # Delete block
-  npm run blocks:delete sql-grundlagen abc123defg -- --confirm
+  lernplattform blocks delete sql-grundlagen abc123defg --confirm
 
   # Reorder blocks
-  npm run blocks:reorder sql-grundlagen abc123,xyz789,quiz456
+  lernplattform blocks reorder sql-grundlagen abc123,xyz789,quiz456
 
   # Bulk update
-  npm run blocks:bulk sql-grundlagen \\
+  lernplattform blocks bulk sql-grundlagen \\
     --operation="update" \\
     --blocks='[
       {"id":"abc123","section":"updated_section"},
@@ -1508,7 +1532,7 @@ EXAMPLES:
     ]'
 
   # Bulk delete
-  npm run blocks:bulk sql-grundlagen \\
+  lernplattform blocks bulk sql-grundlagen \\
     --operation="delete" \\
     --blocks='[
       {"id":"abc123"},
@@ -1543,10 +1567,10 @@ SECTION NAMES:
 JSON INPUT METHODS (for complex data with newlines/special chars):
   # Method 1: Base64 encoding (recommended for scripts)
   echo '{"title":"Test","content":"Line 1\\n\\nLine 2"}' | base64
-  npm run blocks:create lesson -- --type="textBlock" --section="hook" --data-base64="eyJ0aXRsZSI6..."
+  lernplattform blocks create lesson --type="textBlock" --section="hook" --data-base64="eyJ0aXRsZSI6..."
 
   # Method 2: Heredoc (recommended for interactive use)
-  npm run blocks:create lesson -- --type="textBlock" --section="hook" --data-stdin <<'EOF'
+  lernplattform blocks create lesson --type="textBlock" --section="hook" --data-stdin <<'EOF'
   {
     "title": "Mein Titel",
     "content": "Zeile 1\\n\\nZeile 2 mit Umlaut: oe"
@@ -1554,13 +1578,32 @@ JSON INPUT METHODS (for complex data with newlines/special chars):
   EOF
 
   # Method 3: Pipe from file
-  cat block-data.json | npm run blocks:create lesson -- --type="textBlock" --section="hook" --data-stdin
+  cat block-data.json | lernplattform blocks create lesson --type="textBlock" --section="hook" --data-stdin
+
+WORKFLOWS (verkettet mit anderen Bereichen):
+
+  Block-IDs in aktueller Reihenfolge ermitteln, dann gezielt umsortieren:
+    IDS=$(lernplattform blocks list sql-grundlagen 2>/dev/null \\
+      | jq -r 'sort_by(.position) | .[].id' | paste -sd, -)
+    echo "Aktuelle Reihenfolge: $IDS"
+    # Reorder mit angepasster Liste (alle IDs angeben, kein Partial-Reorder):
+    lernplattform blocks reorder sql-grundlagen "id1,id3,id2,id4,id5"
+
+  Alle Quiz-Blocks einer Lesson finden:
+    lernplattform blocks list sql-grundlagen \\
+      | jq '.[] | select(.type=="interactiveQuiz") | {id, section}'
+
+  Bild hochladen und in Block einsetzen:
+    URL=$(lernplattform image-upload ./diagram.png --json 2>/dev/null | jq -r '.url')
+    lernplattform blocks update sql-grundlagen abc123 \\
+      --data="{\\"content\\":\\"![Diagramm](${URL})\\"}"
 
 OUTPUT:
-  All commands return raw JSON from the API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
   Use jq for custom formatting:
-    npm run blocks:list lesson | jq '.[] | select(.type == "interactiveQuiz")'
-    npm run blocks:get lesson id | jq '.data'
+    lernplattform blocks list lesson | jq '.[] | select(.type == "interactiveQuiz")'
+    lernplattform blocks get lesson id | jq '.data'
 `);
 }
 
@@ -1839,7 +1882,7 @@ function printHelp4() {
   console.log(`Learning Path CLI - Manage learning paths
 
 USAGE:
-  npm run path:<operation> [args] [flags]
+  lernplattform path <operation> [args] [flags]
 
 OPERATIONS:
   list                List all learning paths
@@ -1851,29 +1894,29 @@ OPERATIONS:
 EXAMPLES:
 
   List Learning Paths:
-    npm run path:list
-    npm run path:list -- --page=2 --per-page=10
-    npm run path:list -- --json
+    lernplattform path list
+    lernplattform path list --page=2 --per-page=10
+    lernplattform path list --json
 
   Get Learning Path:
-    npm run path:get ap-teil-2-fisi
-    npm run path:get ap-teil-2-fisi -- --json
-    npm run path:get ap-teil-2-fisi -- --save-to-file
+    lernplattform path get ap-teil-2-fisi
+    lernplattform path get ap-teil-2-fisi --json
+    lernplattform path get ap-teil-2-fisi --save-to-file
 
   Create Learning Path:
-    npm run path:create \\
+    lernplattform path create \\
       --title="AP Teil 2 FISI" \\
       --slug="ap-teil-2-fisi" \\
       --status="published"
 
-    npm run path:create \\
+    lernplattform path create \\
       --title="Schnupperkurs JavaScript" \\
       --slug="schnupperkurs-javascript" \\
       --status="published" \\
       --description="Lerne die Grundlagen von JavaScript" \\
       --is-preview=true
 
-    npm run path:create \\
+    lernplattform path create \\
       --title="Premium SQL Kurs" \\
       --slug="premium-sql" \\
       --status="published" \\
@@ -1881,17 +1924,17 @@ EXAMPLES:
       --access-duration=6
 
   Update Learning Path:
-    npm run path:update ap-teil-2-fisi -- --title="AP Teil 2 FISI (2025)"
+    lernplattform path update ap-teil-2-fisi --title="AP Teil 2 FISI (2025)"
 
-    npm run path:update schnupperkurs-javascript \\
-      -- --title="JavaScript Crashkurs" \\
+    lernplattform path update schnupperkurs-javascript \\
+      --title="JavaScript Crashkurs" \\
       --description="Schnelleinstieg in JavaScript" \\
       --status="published"
 
-    npm run path:update premium-sql -- --price-id="price_0987654321"
+    lernplattform path update premium-sql --price-id="price_0987654321"
 
   Delete Learning Path:
-    npm run path:delete old-path -- --confirm
+    lernplattform path delete old-path --confirm
 
 FLAGS:
 
@@ -1917,17 +1960,34 @@ FLAGS:
     --json                Output raw JSON
     --help                Show this help message
 
+WORKFLOWS (verkettet mit anderen Bereichen):
+
+  Kompletten Lernpfad aufbauen (3 Bereiche, gleiche Reihenfolge wie das Datenmodell):
+    # 1) Lernpfad anlegen
+    lernplattform path create --title="FIAE AP2" --slug="fiae-ap2" --status=draft
+    # 2) Bereits existierende Module dem Lernpfad zuordnen (Modul-IDs aus module list/get)
+    MOD_DB=$(lernplattform module get relationale-datenbanken 2>/dev/null | jq '.id')
+    MOD_NET=$(lernplattform module get netzwerke 2>/dev/null | jq '.id')
+    lernplattform path-modules create fiae-ap2 --module-id="$MOD_DB" --position=0
+    lernplattform path-modules create fiae-ap2 --module-id="$MOD_NET" --position=1
+    # 3) Pruefen ('path get' liefert Felder direkt am Root, inkl. .modules)
+    lernplattform path get fiae-ap2 | jq '.modules[] | {id, title, position}'
+
+  Alle Module eines Lernpfads listen (zum Reorder vorbereiten):
+    lernplattform path-modules list fiae-ap2 \\
+      | jq -r '.data | sort_by(.position) | .[].id' | paste -sd, -
+
 OUTPUT:
-  Raw JSON from API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
 
 NOTES:
-  - All learning path management commands output JSON to stdout
-  - Progress/debug messages are sent to stderr
+  - Alle learning-path-Befehle geben JSON auf stdout aus
+  - Status-/Debug-Meldungen gehen auf stderr (mit 2>/dev/null ausblenden fuer Pipes)
   - Use --save-to-file with 'get' to backup before changes
   - Backup location: backups/path/path_{slug}_{timestamp}.json
   - The 'get' operation includes all modules in the learning path
-  - Use path-modules:* commands to manage modules in a learning path
-  - Use --json flag for scripting and programmatic access
+  - Verwende 'lernplattform path-modules ...' fuer Modulzuordnungen, nicht 'path' selbst
 `);
 }
 
@@ -2211,7 +2271,7 @@ DESCRIPTION:
   This CLI manages these associations and their ordering.
 
 USAGE:
-  npm run path-modules:<operation> <learning-path-slug> [args] [flags]
+  lernplattform path-modules <operation> <learning-path-slug> [args] [flags]
 
 OPERATIONS:
   list <learning-path-slug>                    List all modules in a learning path
@@ -2222,25 +2282,25 @@ OPERATIONS:
 
 EXAMPLES:
   # List modules in a learning path
-  npm run path-modules:list ap-teil-2-pruefung
+  lernplattform path-modules list ap-teil-2-pruefung
 
   # Add a module to learning path
-  npm run path-modules:create ap-teil-2-pruefung \\
+  lernplattform path-modules create ap-teil-2-pruefung \\
     --module-id=123 \\
     --position=0
 
   # Add a module without specific position (appends to end)
-  npm run path-modules:create ap-teil-2-pruefung --module-id=456
+  lernplattform path-modules create ap-teil-2-pruefung --module-id=456
 
   # Remove module from learning path
-  npm run path-modules:delete ap-teil-2-pruefung relationale-datenbanken -- --confirm
+  lernplattform path-modules delete ap-teil-2-pruefung relationale-datenbanken --confirm
 
   # Bulk add modules to learning path
-  npm run path-modules:bulk ap-teil-2-pruefung \\
+  lernplattform path-modules bulk ap-teil-2-pruefung \\
     --module-ids='[1, 2, 3, 4, 5]'
 
   # Reorder all modules (must include ALL module IDs)
-  npm run path-modules:reorder ap-teil-2-pruefung 5,3,1,4,2
+  lernplattform path-modules reorder ap-teil-2-pruefung 5,3,1,4,2
 
 FLAGS:
   --module-id=N                Module ID to add
@@ -2680,7 +2740,7 @@ DESCRIPTION:
   This CLI manages these associations and their ordering.
 
 USAGE:
-  npm run content-items:<operation> <module-slug> [args] [flags]
+  lernplattform content-items <operation> <module-slug> [args] [flags]
 
 OPERATIONS:
   list <module-slug>                    List all content items in a module
@@ -2691,50 +2751,54 @@ OPERATIONS:
   bulk <module-slug>                    Bulk add content items
   reorder <module-slug> <ids>           Reorder content items (comma-separated IDs)
 
-CONTENT TYPES:
+CONTENT TYPES (content_type_key in der API-Response):
   lesson        - Lesson content
   video         - Video content
   practice_task - Practice task content
+  lab           - Lab content (Hands-on-Uebungen)
+
+  Zum Filtern in jq nach Typ:
+    lernplattform content-items list <modul> | jq '.data[] | select(.content_type_key=="lesson")'
 
 EXAMPLES:
   # List content items in a module
-  npm run content-items:list relationale-datenbanken
+  lernplattform content-items list relationale-datenbanken
 
   # Get specific content item
-  npm run content-items:get relationale-datenbanken 42
+  lernplattform content-items get relationale-datenbanken 42
 
   # Add a lesson to module
-  npm run content-items:create relationale-datenbanken \\
+  lernplattform content-items create relationale-datenbanken \\
     --content-type="lesson" \\
     --content-id=123 \\
     --position=0 \\
     --included-in-primary-flow=true
 
   # Add a video to module
-  npm run content-items:create relationale-datenbanken \\
+  lernplattform content-items create relationale-datenbanken \\
     --content-type="video" \\
     --content-id=456
 
   # Add a practice task
-  npm run content-items:create relationale-datenbanken \\
+  lernplattform content-items create relationale-datenbanken \\
     --content-type="practice_task" \\
     --content-id=789
 
   # Update content item position
-  npm run content-items:update relationale-datenbanken 42 -- --position=5
+  lernplattform content-items update relationale-datenbanken 42 --position=5
 
   # Update included_in_primary_flow
-  npm run content-items:update relationale-datenbanken 42 -- --included-in-primary-flow=false
+  lernplattform content-items update relationale-datenbanken 42 --included-in-primary-flow=false
 
   # Update both position and included_in_primary_flow
-  npm run content-items:update relationale-datenbanken 42 \\
-    -- --position=3 --included-in-primary-flow=true
+  lernplattform content-items update relationale-datenbanken 42 \\
+    --position=3 --included-in-primary-flow=true
 
   # Remove content item from module
-  npm run content-items:delete relationale-datenbanken 42 -- --confirm
+  lernplattform content-items delete relationale-datenbanken 42 --confirm
 
   # Bulk add content items (inline JSON)
-  npm run content-items:bulk relationale-datenbanken \\
+  lernplattform content-items bulk relationale-datenbanken \\
     --items='[
       {"content_type":"lesson","content_id":1,"position":0},
       {"content_type":"video","content_id":2,"position":1},
@@ -2742,7 +2806,7 @@ EXAMPLES:
     ]'
 
   # Bulk add content items (heredoc - recommended for complex JSON)
-  npm run content-items:bulk my-module -- --items-stdin <<'EOF'
+  lernplattform content-items bulk my-module --items-stdin <<'EOF'
   [
     {"content_type":"lesson","content_id":123,"position":0},
     {"content_type":"video","content_id":456,"position":1},
@@ -2751,7 +2815,7 @@ EXAMPLES:
   EOF
 
   # Reorder all content items (must include ALL item IDs)
-  npm run content-items:reorder relationale-datenbanken 5,3,1,4,2
+  lernplattform content-items reorder relationale-datenbanken 5,3,1,4,2
 
 FLAGS:
   --content-type="..."           Content type (lesson|video|practice_task)
@@ -3107,7 +3171,7 @@ function printHelp7() {
   console.log(`Practice Task CLI - Manage practice tasks
 
 USAGE:
-  npm run practice:<operation> [args] [flags]
+  lernplattform practice <operation> [args] [flags]
 
 OPERATIONS:
   list                List all practice tasks
@@ -3119,18 +3183,18 @@ OPERATIONS:
 EXAMPLES:
 
   List Practice Tasks:
-    npm run practice:list
-    npm run practice:list -- --page=2 --per-page=10
-    npm run practice:list -- --module-id=17
-    npm run practice:list -- --search="nslookup"
-    npm run practice:list -- --module-id=17 --search="DNS"
+    lernplattform practice list
+    lernplattform practice list --page=2 --per-page=10
+    lernplattform practice list --module-id=17
+    lernplattform practice list --search="nslookup"
+    lernplattform practice list --module-id=17 --search="DNS"
 
   Get Practice Task:
-    npm run practice:get anwendung-von-nslookup
-    npm run practice:get task-slug -- --save-to-file
+    lernplattform practice get anwendung-von-nslookup
+    lernplattform practice get task-slug --save-to-file
 
   Create Practice Task (Basic):
-    npm run practice:create \\
+    lernplattform practice create \\
       --title="DNS Troubleshooting mit nslookup" \\
       --slug="dns-troubleshooting-nslookup" \\
       --module-id=17 \\
@@ -3138,7 +3202,7 @@ EXAMPLES:
       --description="Lerne DNS-Probleme mit nslookup zu diagnostizieren"
 
   Create Practice Task with Markdown Content (Heredoc):
-    npm run practice:create \\
+    lernplattform practice create \\
       --title="Arrays sortieren" \\
       --slug="arrays-sortieren" \\
       --module-id=5 \\
@@ -3189,7 +3253,7 @@ EXAMPLES:
     \`\`\`
     EOF
     )
-    npm run practice:create \\
+    lernplattform practice create \\
       --title="REST API mit Express" \\
       --slug="rest-api-express" \\
       --module-id=10 \\
@@ -3198,24 +3262,24 @@ EXAMPLES:
       --solution-markdown-base64="$SOLUTION_CONTENT"
 
   Update Practice Task:
-    npm run practice:update dns-troubleshooting -- --difficulty="schwer"
-    npm run practice:update task-slug -- --title="Neuer Titel"
-    npm run practice:update task-slug -- \\
+    lernplattform practice update dns-troubleshooting --difficulty="schwer"
+    lernplattform practice update task-slug --title="Neuer Titel"
+    lernplattform practice update task-slug -- \\
       --description="Aktualisierte Beschreibung" \\
       --difficulty="einfach"
 
   Update Task Content with Heredoc:
-    npm run practice:update arrays-sortieren -- --task-markdown-stdin <<'EOF'
+    lernplattform practice update arrays-sortieren --task-markdown-stdin <<'EOF'
     # Aktualisierte Aufgabe
 
     Implementiere Quicksort statt Bubblesort.
     EOF
 
   Delete Practice Task:
-    npm run practice:delete old-task -- --confirm
+    lernplattform practice delete old-task --confirm
 
   Backup Before Changes:
-    npm run practice:get my-task -- --save-to-file
+    lernplattform practice get my-task --save-to-file
 
 FLAGS:
   List Operation:
@@ -3265,7 +3329,7 @@ DIFFICULTY LEVELS:
 COMMON WORKFLOWS:
 
   1. Create Practice Task with Full Content:
-     npm run practice:create \\
+     lernplattform practice create \\
        --title="Meine Aufgabe" \\
        --slug="meine-aufgabe" \\
        --module-id=5 \\
@@ -3279,12 +3343,12 @@ COMMON WORKFLOWS:
      SOLUTION_EOF
 
   2. Update Task Content from File:
-     cat task-content.md | npm run practice:update my-task -- --task-markdown-stdin
-     cat solution.md | npm run practice:update my-task -- --solution-markdown-stdin
+     cat task-content.md | lernplattform practice update my-task --task-markdown-stdin
+     cat solution.md | lernplattform practice update my-task --solution-markdown-stdin
 
   3. Backup Before Major Changes:
-     npm run practice:get my-task -- --save-to-file
-     npm run practice:update my-task -- --difficulty="schwer"
+     lernplattform practice get my-task --save-to-file
+     lernplattform practice update my-task --difficulty="schwer"
 
 OUTPUT:
   Raw JSON from API.
@@ -3642,7 +3706,7 @@ function printHelp8() {
   console.log(`Practice Blocks CLI - Manage practice task blocks
 
 USAGE:
-  npm run practice-blocks:<operation> [args] [flags]
+  lernplattform practice-blocks <operation> [args] [flags]
 
 OPERATIONS:
   list <practice-task-slug>              List all blocks in a practice task
@@ -3671,13 +3735,13 @@ BLOCK TYPES:
 EXAMPLES:
 
   # List all blocks in a practice task
-  npm run practice-blocks:list dns-troubleshooting
+  lernplattform practice-blocks list dns-troubleshooting
 
   # Get specific block
-  npm run practice-blocks:get dns-troubleshooting abc123defg
+  lernplattform practice-blocks get dns-troubleshooting abc123defg
 
   # Create task_description block (Aufgabenbeschreibung)
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="task_description" \\
     --data='{
       "title": "Szenario: DNS-Probleme diagnostizieren",
@@ -3685,7 +3749,7 @@ EXAMPLES:
     }'
 
   # Create single_choice block
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="single_choice" \\
     --data='{
       "question": "Welcher DNS-Record-Typ wird fuer E-Mail-Server verwendet?",
@@ -3694,7 +3758,7 @@ EXAMPLES:
     }'
 
   # Create multiple_choice block
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="multiple_choice" \\
     --data='{
       "question": "Welche der folgenden sind gueltige DNS-Record-Typen?",
@@ -3703,7 +3767,7 @@ EXAMPLES:
     }'
 
   # Create free_text block (KI-validiert)
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="free_text" \\
     --data='{
       "question": "Erklaere, wie DNS-Aufloesung funktioniert.",
@@ -3712,26 +3776,26 @@ EXAMPLES:
     }'
 
   # Create with specific position
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="task_description" \\
     --data='{"title":"Schritt 2","content":"..."}' \\
     --position=1
 
   # Update block data
-  npm run practice-blocks:update dns-troubleshooting abc123defg \\
+  lernplattform practice-blocks update dns-troubleshooting abc123defg \\
     --data='{"question":"Aktualisierte Frage","options":["A","B","C"]}'
 
   # Change block type
-  npm run practice-blocks:update dns-troubleshooting abc123defg -- --type="multiple_choice"
+  lernplattform practice-blocks update dns-troubleshooting abc123defg --type="multiple_choice"
 
   # Delete block
-  npm run practice-blocks:delete dns-troubleshooting abc123defg -- --confirm
+  lernplattform practice-blocks delete dns-troubleshooting abc123defg --confirm
 
   # Reorder blocks
-  npm run practice-blocks:reorder dns-troubleshooting abc123,xyz789,quiz456
+  lernplattform practice-blocks reorder dns-troubleshooting abc123,xyz789,quiz456
 
   # Bulk update
-  npm run practice-blocks:bulk dns-troubleshooting \\
+  lernplattform practice-blocks bulk dns-troubleshooting \\
     --operation="update" \\
     --blocks='[
       {"id":"abc123","data":{"question":"Neue Frage 1"}},
@@ -3739,7 +3803,7 @@ EXAMPLES:
     ]'
 
   # Bulk delete
-  npm run practice-blocks:bulk dns-troubleshooting \\
+  lernplattform practice-blocks bulk dns-troubleshooting \\
     --operation="delete" \\
     --blocks='[
       {"id":"abc123"},
@@ -3795,10 +3859,10 @@ JSON INPUT METHODS (for complex data with newlines/special chars):
 
   # Method 1: Base64 encoding (recommended for scripts)
   echo '{"title":"Test","content":"Line 1\\n\\nLine 2"}' | base64
-  npm run practice-blocks:create task-slug -- --type="task_description" --data-base64="eyJ0aXRsZSI6..."
+  lernplattform practice-blocks create task-slug --type="task_description" --data-base64="eyJ0aXRsZSI6..."
 
   # Method 2: Heredoc (recommended for interactive use)
-  npm run practice-blocks:create task-slug -- --type="free_text" --data-stdin <<'EOF'
+  lernplattform practice-blocks create task-slug --type="free_text" --data-stdin <<'EOF'
   {
     "question": "Erklaere das Konzept...",
     "expected_keywords": ["Begriff1", "Begriff2"],
@@ -3807,13 +3871,13 @@ JSON INPUT METHODS (for complex data with newlines/special chars):
   EOF
 
   # Method 3: Pipe from file
-  cat block-data.json | npm run practice-blocks:create task-slug -- --type="single_choice" --data-stdin
+  cat block-data.json | lernplattform practice-blocks create task-slug --type="single_choice" --data-stdin
 
 OUTPUT:
   All commands return raw JSON from the API.
   Use jq for custom formatting:
-    npm run practice-blocks:list task-slug | jq '.[] | select(.type == "free_text")'
-    npm run practice-blocks:get task-slug id | jq '.data'
+    lernplattform practice-blocks list task-slug | jq '.[] | select(.type == "free_text")'
+    lernplattform practice-blocks get task-slug id | jq '.data'
 `);
 }
 
@@ -4115,7 +4179,7 @@ async function run9(argv) {
           console.error(JSON.stringify({
             error: "Missing required flag: --content-type",
             valid_types: VALID_CONTENT_TYPES,
-            example: "npm run rating:summary -- --content-type=lesson --content-id=123"
+            example: "lernplattform rating summary --content-type=lesson --content-id=123"
           }, null, 2));
           process.exit(1);
         }
@@ -4129,7 +4193,7 @@ async function run9(argv) {
         if (contentType !== "platform" && !contentIdStr) {
           console.error(JSON.stringify({
             error: `--content-id is required for content type: ${contentType}`,
-            example: `npm run rating:summary -- --content-type=${contentType} --content-id=123`
+            example: `lernplattform rating summary --content-type=${contentType} --content-id=123`
           }, null, 2));
           process.exit(1);
         }
@@ -4144,7 +4208,7 @@ async function run9(argv) {
           console.error(JSON.stringify({
             error: "Missing required flag: --content-type",
             valid_types: VALID_CONTENT_TYPES,
-            example: "npm run rating:user -- --content-type=lesson --content-id=123"
+            example: "lernplattform rating user --content-type=lesson --content-id=123"
           }, null, 2));
           process.exit(1);
         }
@@ -4158,7 +4222,7 @@ async function run9(argv) {
         if (contentType !== "platform" && !contentIdStr) {
           console.error(JSON.stringify({
             error: `--content-id is required for content type: ${contentType}`,
-            example: `npm run rating:user -- --content-type=${contentType} --content-id=123`
+            example: `lernplattform rating user --content-type=${contentType} --content-id=123`
           }, null, 2));
           process.exit(1);
         }
@@ -4198,7 +4262,7 @@ async function run9(argv) {
         if (contentType !== "platform" && !contentIdStr) {
           console.error(JSON.stringify({
             error: `--content-id is required for content type: ${contentType}`,
-            example: `npm run rating:create -- --content-type=${contentType} --content-id=123 --rating=5`
+            example: `lernplattform rating create --content-type=${contentType} --content-id=123 --rating=5`
           }, null, 2));
           process.exit(1);
         }
@@ -4298,7 +4362,7 @@ function printHelp9() {
   console.log(`Rating CLI - Manage content ratings
 
 USAGE:
-  npm run rating:<operation> [args] [flags]
+  lernplattform rating <operation> [args] [flags]
 
 OPERATIONS:
   list                List all ratings (paginated, filterable)
@@ -4319,34 +4383,34 @@ CONTENT TYPES:
 EXAMPLES:
 
   LIST RATINGS:
-    npm run rating:list
-    npm run rating:list -- --content-type=lesson --content-id=123
-    npm run rating:list -- --min-rating=4 --has-comment=true --sort=-created_at
-    npm run rating:list -- --page=2 --per-page=10
-    npm run rating:list -- --user-id=42
-    npm run rating:list -- --reviewed=false
+    lernplattform rating list
+    lernplattform rating list --content-type=lesson --content-id=123
+    lernplattform rating list --min-rating=4 --has-comment=true --sort=-created_at
+    lernplattform rating list --page=2 --per-page=10
+    lernplattform rating list --user-id=42
+    lernplattform rating list --reviewed=false
 
   GET RATING:
-    npm run rating:get 1
+    lernplattform rating get 1
 
   GET RATING SUMMARY (Statistics):
-    npm run rating:summary -- --content-type=lesson --content-id=123
-    npm run rating:summary -- --content-type=learning_path --content-id=1
-    npm run rating:summary -- --content-type=platform
+    lernplattform rating summary --content-type=lesson --content-id=123
+    lernplattform rating summary --content-type=learning_path --content-id=1
+    lernplattform rating summary --content-type=platform
 
   GET USER RATING (own rating for content):
-    npm run rating:user -- --content-type=lesson --content-id=123
-    npm run rating:user -- --content-type=platform
+    lernplattform rating user --content-type=lesson --content-id=123
+    lernplattform rating user --content-type=platform
 
   CREATE RATING (Basic):
-    npm run rating:create -- --content-type=lesson --content-id=123 --rating=5
-    npm run rating:create -- --content-type=lesson --content-id=123 --rating=5 --comment="Super!"
+    lernplattform rating create --content-type=lesson --content-id=123 --rating=5
+    lernplattform rating create --content-type=lesson --content-id=123 --rating=5 --comment="Super!"
 
   CREATE RATING (Platform, no content-id):
-    npm run rating:create -- --content-type=platform --rating=5 --comment="Tolle Plattform!"
+    lernplattform rating create --content-type=platform --rating=5 --comment="Tolle Plattform!"
 
   CREATE RATING (with long comment using heredoc):
-    npm run rating:create -- --content-type=lesson --content-id=123 --rating=5 --comment-stdin <<'EOF'
+    lernplattform rating create --content-type=lesson --content-id=123 --rating=5 --comment-stdin <<'EOF'
     Sehr gut erklaert! Besonders gefallen hat mir:
     - Die klare Struktur
     - Die praktischen Beispiele
@@ -4354,16 +4418,16 @@ EXAMPLES:
     EOF
 
   CREATE RATING (with Base64 comment):
-    npm run rating:create -- --content-type=lesson --content-id=123 --rating=5 \\
+    lernplattform rating create --content-type=lesson --content-id=123 --rating=5 \\
       --comment-base64="$(echo 'Toller Inhalt!' | base64)"
 
   UPDATE RATING:
-    npm run rating:update 1 -- --rating=4
-    npm run rating:update 1 -- --comment="Nach erneutem Durchgehen: Sehr gut!"
-    npm run rating:update 1 -- --rating=4 --comment="Aktualisierte Bewertung"
+    lernplattform rating update 1 --rating=4
+    lernplattform rating update 1 --comment="Nach erneutem Durchgehen: Sehr gut!"
+    lernplattform rating update 1 --rating=4 --comment="Aktualisierte Bewertung"
 
   DELETE RATING:
-    npm run rating:delete 1 -- --confirm
+    lernplattform rating delete 1 --confirm
 
 REQUIRED FLAGS (for operations):
   summary:
@@ -4437,11 +4501,29 @@ RESPONSE FORMAT:
       }
     }
 
+WORKFLOWS (verkettet mit anderen Bereichen):
+
+  Schlechteste Lessons in einem Modul finden (ueber content-items, nicht .lessons!):
+    MODULE_SLUG="docker-grundlagen-v3"
+    lernplattform content-items list "$MODULE_SLUG" 2>/dev/null \\
+      | jq -r '.data[] | select(.content_type_key=="lesson") | .content_id' \\
+      | while read -r LID; do
+          AVG=$(lernplattform rating summary --content-type=lesson --content-id="$LID" 2>/dev/null \\
+                | jq -r '.data.average // "n/a"')
+          echo "$LID  avg=$AVG"
+        done | sort -k3
+    # Hinweis: 'module get .lessons' ist ein legacy-Feld und fuer neuere Module oft leer.
+
+  Alle unreviewten kritischen Bewertungen (<=2) anzeigen:
+    lernplattform rating list --max-rating=2 --reviewed=false --has-comment=true --sort=-created_at \\
+      | jq '.data[] | {id, rating, content_type, content_title, comment}'
+
 OUTPUT:
-  All commands return raw JSON from the API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
   Use jq for custom formatting:
-    npm run rating:list | jq '.data[] | "\\(.id) \\(.rating) stars"'
-    npm run rating:summary -- --content-type=lesson --content-id=123 | jq '.data.average'
+    lernplattform rating list | jq '.data[] | "\\(.id) \\(.rating) stars"'
+    lernplattform rating summary --content-type=lesson --content-id=123 | jq '.data.average'
 
 NOTES:
   - Rating must be between 1 and 5
@@ -4785,7 +4867,7 @@ async function run10(argv) {
         if (!actorEmail) {
           console.error(JSON.stringify({
             error: "Missing required field: --actor-email",
-            example: 'npm run discussion:solve 123 -- --actor-email="support@ausbildung-in-der-it.de"'
+            example: 'lernplattform discussion solve 123 --actor-email="support@ausbildung-in-der-it.de"'
           }, null, 2));
           process.exit(1);
         }
@@ -4813,7 +4895,7 @@ async function run10(argv) {
         if (!actorEmail) {
           console.error(JSON.stringify({
             error: "Missing required field: --actor-email",
-            example: 'npm run discussion:unsolve 123 -- --actor-email="support@ausbildung-in-der-it.de"'
+            example: 'lernplattform discussion unsolve 123 --actor-email="support@ausbildung-in-der-it.de"'
           }, null, 2));
           process.exit(1);
         }
@@ -4859,7 +4941,7 @@ async function run10(argv) {
         if (!actorEmail) {
           console.error(JSON.stringify({
             error: "Missing required field: --actor-email",
-            example: 'npm run discussion:delete-comment 789 -- --actor-email="support@ausbildung-in-der-it.de" --confirm'
+            example: 'lernplattform discussion delete-comment 789 --actor-email="support@ausbildung-in-der-it.de" --confirm'
           }, null, 2));
           process.exit(1);
         }
@@ -4884,7 +4966,7 @@ async function run10(argv) {
         if (!actorEmail) {
           console.error(JSON.stringify({
             error: "Missing required field: --actor-email",
-            example: 'npm run discussion:accept 789 -- --actor-email="support@ausbildung-in-der-it.de"'
+            example: 'lernplattform discussion accept 789 --actor-email="support@ausbildung-in-der-it.de"'
           }, null, 2));
           process.exit(1);
         }
@@ -4910,7 +4992,7 @@ function printHelp10() {
   console.log(`Discussion CLI - Manage discussion threads and comments
 
 USAGE:
-  npm run discussion:<operation> [args] [flags]
+  lernplattform discussion <operation> [args] [flags]
 
 OPERATIONS:
   list                       List discussion threads (paginated)
@@ -4930,19 +5012,19 @@ THREAD STATUS VALUES:
 EXAMPLES:
 
   LIST THREADS:
-    npm run discussion:list
-    npm run discussion:list -- --status=open --limit=10
-    npm run discussion:list -- --status=solved --page=2
-    npm run discussion:list -- --status=all --limit=50
+    lernplattform discussion list
+    lernplattform discussion list --status=open --limit=10
+    lernplattform discussion list --status=solved --page=2
+    lernplattform discussion list --status=all --limit=50
 
   GET SINGLE THREAD (with comments):
-    npm run discussion:get 123
+    lernplattform discussion get 123
 
   CREATE COMMENT:
-    npm run discussion:comment 123 -- --content="Hier ist meine Antwort..." --author-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion comment 123 --content="Hier ist meine Antwort..." --author-email="support@ausbildung-in-der-it.de"
 
   CREATE COMMENT (with heredoc for long content):
-    npm run discussion:comment 123 -- --author-email="support@ausbildung-in-der-it.de" --content-stdin <<'EOF'
+    lernplattform discussion comment 123 --author-email="support@ausbildung-in-der-it.de" --content-stdin <<'EOF'
     LEFT JOIN gibt alle Zeilen aus der linken Tabelle zurueck,
     auch wenn es keine passenden Zeilen in der rechten Tabelle gibt.
 
@@ -4951,26 +5033,26 @@ EXAMPLES:
     EOF
 
   CREATE COMMENT (with Base64 content):
-    npm run discussion:comment 123 -- --author-email="support@ausbildung-in-der-it.de" \\
+    lernplattform discussion comment 123 --author-email="support@ausbildung-in-der-it.de" \\
       --content-base64="$(echo 'Meine Antwort' | base64)"
 
   MARK THREAD AS SOLVED:
-    npm run discussion:solve 123 -- --actor-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion solve 123 --actor-email="support@ausbildung-in-der-it.de"
 
   MARK THREAD AS SOLVED (with accepted answer):
-    npm run discussion:solve 123 -- --actor-email="support@ausbildung-in-der-it.de" --accepted-comment-id=789
+    lernplattform discussion solve 123 --actor-email="support@ausbildung-in-der-it.de" --accepted-comment-id=789
 
   MARK THREAD AS UNSOLVED:
-    npm run discussion:unsolve 123 -- --actor-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion unsolve 123 --actor-email="support@ausbildung-in-der-it.de"
 
   UPDATE COMMENT:
-    npm run discussion:update-comment 789 -- --content="Korrigierte Antwort..." --actor-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion update-comment 789 --content="Korrigierte Antwort..." --actor-email="support@ausbildung-in-der-it.de"
 
   DELETE COMMENT:
-    npm run discussion:delete-comment 789 -- --actor-email="support@ausbildung-in-der-it.de" --confirm
+    lernplattform discussion delete-comment 789 --actor-email="support@ausbildung-in-der-it.de" --confirm
 
   ACCEPT COMMENT AS ANSWER:
-    npm run discussion:accept 789 -- --actor-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion accept 789 --actor-email="support@ausbildung-in-der-it.de"
 
 REQUIRED FLAGS:
 
@@ -5053,11 +5135,33 @@ RESPONSE FORMAT:
       "data": { "id": 123, "is_solved": true, "accepted_comment_id": 789 }
     }
 
+WORKFLOWS (verkettet, typischer Support-Flow):
+
+  Naechsten offenen Thread holen, Kontext lesen, antworten, schliessen:
+    ADMIN="support@ausbildung-in-der-it.de"
+    THREAD=$(lernplattform discussion list --status=open --limit=1 2>/dev/null \\
+      | jq '.data[0].id')
+    lernplattform discussion get "$THREAD" \\
+      | jq '{title: .data.title, lesson: .data.context.lesson.slug, content: .data.content}'
+    lernplattform discussion comment "$THREAD" --author-email="$ADMIN" --content-stdin <<'EOF'
+    Die Aufloesung erfolgt ueber den Resolver des Betriebssystems...
+    EOF
+    # Antwort als akzeptiert markieren -> Thread schliessen:
+    NEW_COMMENT=$(lernplattform discussion get "$THREAD" 2>/dev/null \\
+      | jq '.data.comments[-1].id')
+    lernplattform discussion solve "$THREAD" \\
+      --actor-email="$ADMIN" --accepted-comment-id="$NEW_COMMENT"
+
+  Alle offenen Threads zaehlen, gruppiert nach Lesson:
+    lernplattform discussion list --status=open --limit=100 \\
+      | jq '.data | group_by(.context.lesson.slug) | map({slug: .[0].context.lesson.slug, count: length})'
+
 OUTPUT:
-  All commands return raw JSON from the API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
   Use jq for custom formatting:
-    npm run discussion:list | jq '.data[] | "\\(.id) - \\(.title)"'
-    npm run discussion:get 123 | jq '.data.comments | length'
+    lernplattform discussion list | jq '.data[] | "\\(.id) - \\(.title)"'
+    lernplattform discussion get 123 | jq '.data.comments | length'
 
 NOTES:
   - Content maximum length is 10,000 characters
@@ -5154,7 +5258,7 @@ DESCRIPTION:
   Returns content that matches your query with metadata for navigation.
 
 USAGE:
-  npm run aidi:search "<query>"
+  lernplattform search "<query>"
 
 ARGUMENTS:
   query           Search term or phrase to find in platform content
@@ -5164,36 +5268,41 @@ FLAGS:
 
 EXAMPLES:
   # Search for networking topics
-  npm run aidi:search "IPv4"
+  lernplattform search "IPv4"
 
   # Find database lessons
-  npm run aidi:search "SQL JOIN"
+  lernplattform search "SQL JOIN"
 
   # Search for command-line tools
-  npm run aidi:search "nslookup"
+  lernplattform search "nslookup"
 
   # Multi-word queries
-  npm run aidi:search "object oriented programming"
+  lernplattform search "object oriented programming"
 
   # Search for specific concepts
-  npm run aidi:search "normalisierung datenbank"
+  lernplattform search "normalisierung datenbank"
 
 OUTPUT FORMAT:
-  Returns JSON with the following structure:
+  Laravel paginator. Treffer in '.data', Gesamtzahl in '.meta.total':
 
   {
-    "results": [
+    "data": [
       {
-        "type": "lesson",              // Content type: lesson, module, practice_task, video
-        "id": 123,                     // Numeric ID
-        "title": "SQL Grundlagen",     // Content title
+        "type": "lesson",              // lesson | module | practice_task | video
+        "id": 123,                     // numeric ID
+        "title": "SQL Grundlagen",
         "slug": "sql-grundlagen",      // URL-friendly identifier
-        "description": "...",          // Content description (null if not available)
-        "module_title": "Datenbanken"  // Parent module title (null for modules)
+        "description": "..."           // null wenn nicht gesetzt
       }
     ],
-    "total": 5                         // Total number of results
+    "links": { "first": "...", "last": "...", "prev": null, "next": "..." },
+    "meta":  { "current_page": 1, "per_page": 15, "total": 5, "last_page": 1 }
   }
+
+  Praktisches jq:
+    .data[]                            # alle Treffer
+    .data[] | select(.type=="lesson")  # nur Lessons
+    .meta.total                        # Gesamtanzahl
 
 USE CASES:
   - Find lessons on specific topics before analysis
@@ -5208,10 +5317,6 @@ TIPS:
   - Search is case-insensitive
   - Partial matches are included
   - Results include content from title, description, and body
-
-COMPARISON WITH 'npm run search':
-  npm run aidi:search    # Search AIDI platform content (lessons, modules, etc.)
-  npm run search         # Search the web with Perplexity (fact-checking, research)
 
 ENVIRONMENT:
   AIDI_HOST_URL          # API host (default: production)
@@ -5437,21 +5542,21 @@ DESCRIPTION:
   for embedding in lessons and content blocks.
 
 USAGE:
-  npm run image:upload <file-path> [options]
-  npm run image:upload <glob-pattern> [options]
+  lernplattform image-upload <file-path> [options]
+  lernplattform image-upload <glob-pattern> [options]
 
 EXAMPLES:
   # Upload single image
-  npm run image:upload ./images/diagram.png
+  lernplattform image-upload ./images/diagram.png
 
   # Upload to specific directory
-  npm run image:upload ./images/diagram.png -- --directory=lessons/arrays
+  lernplattform image-upload ./images/diagram.png --directory=lessons/arrays
 
   # Upload multiple images with glob pattern
-  npm run image:upload "./images/*.png" -- --directory=lessons/arrays
+  lernplattform image-upload "./images/*.png" --directory=lessons/arrays
 
   # JSON output for scripting
-  npm run image:upload ./images/diagram.png -- --json
+  lernplattform image-upload ./images/diagram.png --json
 
 OPTIONS:
   --directory=<path>  Subdirectory to store images in
@@ -5489,15 +5594,16 @@ USE CASES:
   - Get CDN URLs for embedding in lesson blocks
 
 WORKFLOW EXAMPLE:
-  # 1. Generate educational visual
-  npm run generate-image "Create sketchnotes explaining 2D arrays..." -- --aspect-ratio=16:9
+  # 1. Bild generieren (extern, z. B. mit dem 'tools' CLI oder beliebigem Image-Tool)
+  #    tools image generate "Sketchnote: 2D-Arrays" --aspect-ratio=16:9 -o ./images/2d-arrays.png
 
-  # 2. Upload to AIDI CDN
-  npm run image:upload ./images/image-*.jpeg -- --directory=lessons/mehrdimensionale-arrays
+  # 2. Bild zu AIDI CDN hochladen, URL aus JSON extrahieren
+  URL=$(lernplattform image-upload ./images/2d-arrays.png \\
+    --directory=lessons/mehrdimensionale-arrays --json 2>/dev/null | jq -r '.url')
 
-  # 3. Use returned URL in lesson block (embed the CDN URL in your textBlock content)
-  npm run blocks:update mehrdimensionale-arrays abc123 \\
-    --data='{"content":"![2D Array](https://cdn.ausbildung-in-der-it.de/...)"}'
+  # 3. URL in Lesson-Block einsetzen (z. B. textBlock 'content' mit Markdown-Bild)
+  lernplattform blocks update mehrdimensionale-arrays abc123 \\
+    --data="{\\"content\\":\\"![2D Array](${URL})\\"}"
 
 TECHNICAL NOTES:
   - Requires AIDI_API_TOKEN in .env
@@ -5532,24 +5638,32 @@ var handlers = {
 var HELP_TEXT = `lernplattform - CLI f\xFCr die ausbildung-in-der-it.de Lernplattform
 
 USAGE
-  lernplattform <bereich> <aktion> [args...]
+  lernplattform <bereich> <aktion> [args...] [--flag=wert]
 
-BEREICHE
-  lesson                    Lessons verwalten (list|get|mdx|create|update|delete)
-  module                    Module verwalten (list|get|create|update|delete)
-  blocks                    Lesson-Blocks (list|get|create|update|delete|reorder|bulk)
+BEREICHE (sortiert nach Datenmodell-Hierarchie)
   learning-path  (path)     Lernpfade (list|get|create|update|delete)
   path-modules              Module einem Lernpfad zuordnen (list|create|delete|bulk|reorder)
-  content-items             Content einem Modul zuordnen (list|get|create|update|delete|bulk|reorder)
+  module                    Module verwalten (list|get|create|update|delete)
+  content-items             Content (Lessons/Videos/Practice) einem Modul zuordnen (list|get|create|update|delete|bulk|reorder)
+  lesson                    Lessons verwalten (list|get|mdx|create|update|delete)
+  blocks                    Lesson-Blocks (list|get|create|update|delete|reorder|bulk)
   practice-task  (practice) Practice Tasks (list|get|create|update|delete)
   practice-blocks           Practice-Task-Blocks (list|get|create|update|delete|reorder|bulk)
   rating                    Ratings (list|get|summary|user|create|update|delete)
-  discussion                Discussions (list|get|comment|solve|unsolve|...|accept)
-  search                    Plattform-Inhalte durchsuchen
-  image-upload              Bilder zu AIDI hochladen
+  discussion                Discussions (list|get|comment|solve|unsolve|update-comment|delete-comment|accept)
+  search                    Plattform-Inhalte durchsuchen (Discovery)
+  image-upload              Bilder zu AIDI hochladen (CDN-URLs zurueck)
+
+DATENMODELL (grob)
+  learning-path
+    -> path-modules (Zuordnung learning-path <-> module)
+       -> module
+          -> content-items (Zuordnung module <-> lesson/video/practice-task)
+             -> lesson  --> blocks
+             -> practice-task --> practice-blocks
 
 HILFE
-  lernplattform <bereich> --help    Hilfe f\xFCr einen Bereich
+  lernplattform <bereich> --help    Hilfe und Beispiele fuer einen Bereich
   lernplattform --version           Version anzeigen
 
 UMGEBUNG
@@ -5557,14 +5671,103 @@ UMGEBUNG
     1) $LERNPLATTFORM_ENV_FILE
     2) ./.env (cwd)
     3) ~/.config/lernplattform/.env
-  Pflicht: AIDI_API_TOKEN
+  Pflicht:  AIDI_API_TOKEN
   Optional: AIDI_HOST_URL (default: https://app.ausbildung-in-der-it.de)
 
-BEISPIELE
+IO-KONVENTIONEN (wichtig fuer Skripte und Agenten)
+  stdout    Reines JSON aus der API (Erfolg) bzw. MDX-Text (nur lesson mdx)
+  stderr    Status-/Debug-Logs ("Listing ...", "Response received in ..s")
+  Exit 0    Erfolg
+  Exit 1    Fehler. stderr enthaelt JSON: {"error": "..."}
+  Mit jq    lernplattform <bereich> <aktion> ... 2>/dev/null | jq '...'
+            (stderr ausblenden, jq auf stdout)
+
+DISCOVERY FUER AGENTEN
+  Slug oder ID unbekannt? Erst suchen, dann lesen, dann veraendern:
+    1) lernplattform search "datenbanken"          # findet lessons/module/practice
+    2) lernplattform lesson list --per-page=50     # blaettern wenn search nichts hat
+    3) lernplattform lesson get <slug>             # Detail inkl. Blocks
+  Niemals Slugs raten. Slugs sind unique und case-sensitive.
+
+JSON-EINGABE (Blocks, Items, lange Inhalte)
+  Drei aequivalente Wege, Prioritaet stdin > base64 > inline:
+    --foo='[...]'                        # inline (Quoting fragil)
+    --foo-base64="$(echo '[...]' | base64)"
+    --foo-stdin <<'EOF'                  # robust, empfohlen
+    [ ... ]
+    EOF
+
+BEISPIELE (einzelne Befehle)
+  lernplattform search "ipv4"
   lernplattform lesson list --per-page=5
-  lernplattform module get hauptmodul-x
-  lernplattform blocks list my-lesson
-  lernplattform search "datenbanken"
+  lernplattform module get relationale-datenbanken
+  lernplattform blocks list sql-grundlagen
+  lernplattform lesson mdx sql-grundlagen > sql.mdx
+  lernplattform rating summary --content-type=lesson --content-id=123
+
+WORKFLOWS (verkettete Beispiele)
+
+  1) Lesson finden, Detail holen:
+     # 'search' liefert Laravel-Paginator: Treffer in .data, Gesamtzahl in .meta.total
+     SLUG=$(lernplattform search "ipv4" 2>/dev/null \\
+       | jq -r '.data[] | select(.type=="lesson") | .slug' | head -1)
+     lernplattform lesson get "$SLUG" | jq '{id, title, type, blocks: (.blocks|length)}'
+     # Fuer Lessons vom Typ 'mdx' oder 'text' zusaetzlich:
+     #   lernplattform lesson mdx "$SLUG" > "$SLUG.mdx"
+     # 'interactive' Lessons haben keinen MDX-Export, dort lieber blocks list/get nutzen
+
+  2) Modul anlegen und Lessons zuordnen:
+     lernplattform module create \\
+       --title="Schnupperkurs Python" --slug="schnupper-python" \\
+       --type=normal --status=draft
+     MODULE_ID=$(lernplattform module get schnupper-python 2>/dev/null | jq '.id')
+     lernplattform lesson create \\
+       --title="Hallo Python" --slug="hallo-python" \\
+       --module-id="$MODULE_ID" --type=text --xp=50
+
+  3) Komplette Lesson mit Blocks via stdin (robust, ohne Quoting-Aerger):
+     lernplattform lesson create \\
+       --title="OOP Grundlagen" --slug="oop-grundlagen" \\
+       --module-id=122 --type=interactive --xp=150 \\
+       --blocks-stdin <<'EOF'
+     [
+       {"type":"textBlock","section":"hook","data":{"title":"Einstieg","content":"..."}},
+       {"type":"textBlock","section":"knowledge1","data":{"title":"Klassen","content":"..."}}
+     ]
+     EOF
+
+  4) Bestehende Lesson sichern, dann Blocks ersetzen (REPLACE-Semantik!):
+     lernplattform lesson get sql-grundlagen --save-to-file        # backup nach backups/
+     lernplattform lesson update sql-grundlagen --blocks-stdin <<'EOF'
+     [ ... neue komplette Blockliste ... ]
+     EOF
+
+  5) Lernpfad bauen (path -> path-modules -> content-items):
+     lernplattform path create --title="FIAE AP2" --slug="fiae-ap2" --status=draft
+     lernplattform path-modules create fiae-ap2 --module-id=122 --position=0
+     lernplattform content-items create relationale-datenbanken \\
+       --content-type=lesson --content-id=123 --position=0
+
+  6) Discussion bearbeiten und schliessen:
+     THREAD=$(lernplattform discussion list --status=open 2>/dev/null \\
+       | jq '.data[0].id')
+     lernplattform discussion comment "$THREAD" \\
+       --author-email="support@ausbildung-in-der-it.de" \\
+       --content-stdin <<'EOF'
+     Die Aufloesung erfolgt ueber den Resolver des Betriebssystems...
+     EOF
+     lernplattform discussion solve "$THREAD" \\
+       --actor-email="support@ausbildung-in-der-it.de"
+
+DESTRUKTIVE OPERATIONEN
+  delete erfordert immer --confirm. Ohne --confirm Exit 1 mit Fehler-JSON.
+  Beispiel: lernplattform lesson delete old-lesson --confirm
+
+WEITERE HINWEISE
+  - Pagination: --page=N --per-page=N (Default per-page meist 15-20)
+  - Mehrere Aliase pro Bereich (z. B. path == learning-path, practice == practice-task)
+  - bulk und reorder erwarten JSON-Arrays. Bei reorder: ALLE IDs angeben.
+  - Update-Operationen auf Blocks-Listen sind REPLACE (alle Blocks werden ersetzt)
 `;
 async function main() {
   const argv = process.argv.slice(2);

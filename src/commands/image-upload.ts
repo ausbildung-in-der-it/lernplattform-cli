@@ -4,12 +4,12 @@
  * Uploads local images to the AIDI API and returns CDN URLs for embedding.
  *
  * Usage:
- *   npm run image:upload <file-path> [--directory=<dir>] [--json]
+ *   lernplattform image-upload <file-path> [--directory=<dir>] [--json]
  *
  * Examples:
- *   npm run image:upload ./images/diagram.png
- *   npm run image:upload ./images/diagram.png -- --directory=lessons/arrays
- *   npm run image:upload ./images/*.png -- --directory=lessons/arrays
+ *   lernplattform image-upload ./images/diagram.png
+ *   lernplattform image-upload ./images/diagram.png --directory=lessons/arrays
+ *   lernplattform image-upload ./images/*.png --directory=lessons/arrays
  */
 
 import fs from 'node:fs';
@@ -273,21 +273,21 @@ DESCRIPTION:
   for embedding in lessons and content blocks.
 
 USAGE:
-  npm run image:upload <file-path> [options]
-  npm run image:upload <glob-pattern> [options]
+  lernplattform image-upload <file-path> [options]
+  lernplattform image-upload <glob-pattern> [options]
 
 EXAMPLES:
   # Upload single image
-  npm run image:upload ./images/diagram.png
+  lernplattform image-upload ./images/diagram.png
 
   # Upload to specific directory
-  npm run image:upload ./images/diagram.png -- --directory=lessons/arrays
+  lernplattform image-upload ./images/diagram.png --directory=lessons/arrays
 
   # Upload multiple images with glob pattern
-  npm run image:upload "./images/*.png" -- --directory=lessons/arrays
+  lernplattform image-upload "./images/*.png" --directory=lessons/arrays
 
   # JSON output for scripting
-  npm run image:upload ./images/diagram.png -- --json
+  lernplattform image-upload ./images/diagram.png --json
 
 OPTIONS:
   --directory=<path>  Subdirectory to store images in
@@ -325,15 +325,16 @@ USE CASES:
   - Get CDN URLs for embedding in lesson blocks
 
 WORKFLOW EXAMPLE:
-  # 1. Generate educational visual
-  npm run generate-image "Create sketchnotes explaining 2D arrays..." -- --aspect-ratio=16:9
+  # 1. Bild generieren (extern, z. B. mit dem 'tools' CLI oder beliebigem Image-Tool)
+  #    tools image generate "Sketchnote: 2D-Arrays" --aspect-ratio=16:9 -o ./images/2d-arrays.png
 
-  # 2. Upload to AIDI CDN
-  npm run image:upload ./images/image-*.jpeg -- --directory=lessons/mehrdimensionale-arrays
+  # 2. Bild zu AIDI CDN hochladen, URL aus JSON extrahieren
+  URL=$(lernplattform image-upload ./images/2d-arrays.png \\
+    --directory=lessons/mehrdimensionale-arrays --json 2>/dev/null | jq -r '.url')
 
-  # 3. Use returned URL in lesson block (embed the CDN URL in your textBlock content)
-  npm run blocks:update mehrdimensionale-arrays abc123 \\
-    --data='{"content":"![2D Array](https://cdn.ausbildung-in-der-it.de/...)"}'
+  # 3. URL in Lesson-Block einsetzen (z. B. textBlock 'content' mit Markdown-Bild)
+  lernplattform blocks update mehrdimensionale-arrays abc123 \\
+    --data="{\\"content\\":\\"![2D Array](${URL})\\"}"
 
 TECHNICAL NOTES:
   - Requires AIDI_API_TOKEN in .env

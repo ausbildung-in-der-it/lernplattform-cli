@@ -4,11 +4,11 @@
  * Direct API implementation without tool dependency.
  *
  * Usage:
- *   npm run lesson:list [--page=N] [--per-page=N]
- *   npm run lesson:get <slug>
- *   npm run lesson:create --title="..." --slug="..." --module-id=N --type="..." --xp=N
- *   npm run lesson:update <slug> -- --title="..."
- *   npm run lesson:delete <slug> -- --confirm
+ *   lernplattform lesson list [--page=N] [--per-page=N]
+ *   lernplattform lesson get <slug>
+ *   lernplattform lesson create --title="..." --slug="..." --module-id=N --type="..." --xp=N
+ *   lernplattform lesson update <slug> --title="..."
+ *   lernplattform lesson delete <slug> --confirm
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag, getTextData, getJsonData } from '../utils/args';
@@ -488,7 +488,7 @@ function printHelp() {
   console.log(`Lesson CLI - Manage lessons
 
 USAGE:
-  npm run lesson:<operation> [args] [flags]
+  lernplattform lesson <operation> [args] [flags]
 
 OPERATIONS:
   list                List all lessons (paginated)
@@ -501,19 +501,19 @@ OPERATIONS:
 EXAMPLES:
 
   LIST LESSONS:
-    npm run lesson:list
-    npm run lesson:list -- --page=2 --per-page=10
+    lernplattform lesson list
+    lernplattform lesson list --page=2 --per-page=10
 
   GET LESSON:
-    npm run lesson:get sql-basics
-    npm run lesson:get sql-basics -- --save-to-file
+    lernplattform lesson get sql-basics
+    lernplattform lesson get sql-basics --save-to-file
 
   GET MDX CONTENT:
-    npm run lesson:mdx einfuehrung-in-projekte
-    npm run lesson:mdx sql-basics > lesson.mdx
+    lernplattform lesson mdx einfuehrung-in-projekte
+    lernplattform lesson mdx sql-basics > lesson.mdx
 
   CREATE LESSON (Basic):
-    npm run lesson:create \\
+    lernplattform lesson create \\
       --title="SQL Einfuehrung" \\
       --slug="sql-einfuehrung" \\
       --module-id=122 \\
@@ -521,7 +521,7 @@ EXAMPLES:
       --xp=100
 
   CREATE LESSON (With all fields):
-    npm run lesson:create \\
+    lernplattform lesson create \\
       --title="SQL Joins" \\
       --slug="sql-joins" \\
       --module-id=122 \\
@@ -532,7 +532,7 @@ EXAMPLES:
       --position=3
 
   CREATE LESSON WITH BLOCKS (using stdin - RECOMMENDED):
-    npm run lesson:create \\
+    lernplattform lesson create \\
       --title="OOP Grundlagen" \\
       --slug="oop-grundlagen" \\
       --module-id=122 \\
@@ -573,7 +573,7 @@ EXAMPLES:
     EOF
 
   CREATE LESSON WITH BLOCKS (using Base64):
-    npm run lesson:create \\
+    lernplattform lesson create \\
       --title="Test Lesson" \\
       --slug="test-lesson" \\
       --module-id=122 \\
@@ -582,18 +582,18 @@ EXAMPLES:
       --blocks-base64="$(echo '[{"type":"textBlock","section":"hook","data":{"title":"Test","content":"Content"}}]' | base64)"
 
   UPDATE LESSON (Basic fields):
-    npm run lesson:update sql-basics -- --title="SQL Basics Updated"
-    npm run lesson:update sql-basics -- --title="New Title" --xp=250 --status="published"
+    lernplattform lesson update sql-basics --title="SQL Basics Updated"
+    lernplattform lesson update sql-basics --title="New Title" --xp=250 --status="published"
 
   UPDATE LESSON (With content):
-    npm run lesson:update sql-basics -- --content-stdin <<'EOF'
+    lernplattform lesson update sql-basics --content-stdin <<'EOF'
     # SQL Basics
 
     This lesson covers SQL fundamentals...
     EOF
 
   UPDATE LESSON BLOCKS (REPLACES all blocks):
-    npm run lesson:update sql-basics -- --blocks-stdin <<'EOF'
+    lernplattform lesson update sql-basics --blocks-stdin <<'EOF'
     [
       {"type":"textBlock","section":"hook","data":{"title":"Updated Hook","content":"New intro..."}},
       {"type":"textBlock","section":"knowledge1","data":{"title":"New Content","content":"..."}}
@@ -601,7 +601,7 @@ EXAMPLES:
     EOF
 
   DELETE LESSON:
-    npm run lesson:delete old-lesson -- --confirm
+    lernplattform lesson delete old-lesson --confirm
 
 REQUIRED FLAGS (for create):
   --title="..."         Lesson title
@@ -675,29 +675,53 @@ BLOCKS FORMAT:
 
 JSON INPUT METHODS (to avoid shell escaping issues):
   1. stdin with heredoc (RECOMMENDED):
-     npm run lesson:create ... --blocks-stdin <<'EOF'
+     lernplattform lesson create ... --blocks-stdin <<'EOF'
      [...]
      EOF
 
   2. Base64 encoding:
-     npm run lesson:create ... --blocks-base64="$(echo '[...]' | base64)"
+     lernplattform lesson create ... --blocks-base64="$(echo '[...]' | base64)"
 
   3. Pipe from file:
-     cat blocks.json | npm run lesson:create ... --blocks-stdin
+     cat blocks.json | lernplattform lesson create ... --blocks-stdin
 
   Priority: stdin > base64 > normal
 
+WORKFLOWS (verkettet mit anderen Bereichen):
+
+  Discovery -> Read -> Export (Lesson per Suche finden):
+    # 'search' liefert Laravel-Paginator. Lesson-Treffer in .data:
+    SLUG=$(lernplattform search "datenbanken" 2>/dev/null \\
+      | jq -r '.data[] | select(.type=="lesson") | .slug' | head -1)
+    lernplattform lesson get "$SLUG" | jq '{id, title, type, blocks: (.blocks|length)}'
+    # MDX-Export funktioniert nur fuer Lessons vom Typ 'mdx' oder 'text':
+    #   lernplattform lesson mdx "$SLUG" > "$SLUG.mdx"
+
+  Lesson neu mit Modul-Kontext (Modul vorher per Slug holen):
+    MODULE_ID=$(lernplattform module get relationale-datenbanken 2>/dev/null | jq '.id')
+    lernplattform lesson create \\
+      --title="SQL Subqueries" --slug="sql-subqueries" \\
+      --module-id="$MODULE_ID" --type=interactive --xp=150
+
+  Block-Anzahl pruefen vor Update (REPLACE-Semantik!):
+    lernplattform lesson get sql-basics --save-to-file       # Backup nach backups/
+    lernplattform blocks list sql-basics | jq 'length'       # vorher zaehlen
+    lernplattform lesson update sql-basics --blocks-stdin <<'EOF'
+    [ ... vollstaendige neue Blockliste ... ]
+    EOF
+
 OUTPUT:
-  All commands return raw JSON from the API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
   Use jq for custom formatting:
-    npm run lesson:list | jq '.data[] | "\\(.id) \\(.title)"'
-    npm run lesson:get sql-basics | jq '.blocks | length'
+    lernplattform lesson list | jq '.data[] | "\\(.id) \\(.title)"'
+    lernplattform lesson get sql-basics | jq '.blocks | length'
 
 NOTES:
   - XP is REQUIRED when creating lessons (API enforces this)
   - Status defaults to "draft" if not specified
-  - Blocks can be added during creation or later via blocks:create
-  - Updating blocks REPLACES all existing blocks (use blocks:update for individual changes)
+  - Blocks koennen mit create direkt mitgegeben oder spaeter via 'lernplattform blocks create' angelegt werden
+  - 'lernplattform lesson update --blocks-stdin' ERSETZT alle Blocks. Fuer einzelne Aenderungen 'lernplattform blocks update' verwenden.
   - Use --save-to-file with get to backup before making changes
 `);
 }

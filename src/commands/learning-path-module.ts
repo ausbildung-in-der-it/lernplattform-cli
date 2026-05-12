@@ -4,11 +4,11 @@
  * Learning path modules link modules to learning paths and define their order.
  *
  * Usage:
- *   npm run path-modules:list <learning-path-slug>
- *   npm run path-modules:create <learning-path-slug> --module-id=123 [--position=0]
- *   npm run path-modules:delete <learning-path-slug> <module-slug> -- --confirm
- *   npm run path-modules:bulk <learning-path-slug> --module-ids='[1, 2, 3]'
- *   npm run path-modules:reorder <learning-path-slug> 1,2,3,4,5
+ *   lernplattform path-modules list <learning-path-slug>
+ *   lernplattform path-modules create <learning-path-slug> --module-id=123 [--position=0]
+ *   lernplattform path-modules delete <learning-path-slug> <module-slug> --confirm
+ *   lernplattform path-modules bulk <learning-path-slug> --module-ids='[1, 2, 3]'
+ *   lernplattform path-modules reorder <learning-path-slug> 1,2,3,4,5
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag, getJsonData } from '../utils/args';
@@ -399,7 +399,7 @@ DESCRIPTION:
   This CLI manages these associations and their ordering.
 
 USAGE:
-  npm run path-modules:<operation> <learning-path-slug> [args] [flags]
+  lernplattform path-modules <operation> <learning-path-slug> [args] [flags]
 
 OPERATIONS:
   list <learning-path-slug>                    List all modules in a learning path
@@ -410,25 +410,25 @@ OPERATIONS:
 
 EXAMPLES:
   # List modules in a learning path
-  npm run path-modules:list ap-teil-2-pruefung
+  lernplattform path-modules list ap-teil-2-pruefung
 
   # Add a module to learning path
-  npm run path-modules:create ap-teil-2-pruefung \\
+  lernplattform path-modules create ap-teil-2-pruefung \\
     --module-id=123 \\
     --position=0
 
   # Add a module without specific position (appends to end)
-  npm run path-modules:create ap-teil-2-pruefung --module-id=456
+  lernplattform path-modules create ap-teil-2-pruefung --module-id=456
 
   # Remove module from learning path
-  npm run path-modules:delete ap-teil-2-pruefung relationale-datenbanken -- --confirm
+  lernplattform path-modules delete ap-teil-2-pruefung relationale-datenbanken --confirm
 
   # Bulk add modules to learning path
-  npm run path-modules:bulk ap-teil-2-pruefung \\
+  lernplattform path-modules bulk ap-teil-2-pruefung \\
     --module-ids='[1, 2, 3, 4, 5]'
 
   # Reorder all modules (must include ALL module IDs)
-  npm run path-modules:reorder ap-teil-2-pruefung 5,3,1,4,2
+  lernplattform path-modules reorder ap-teil-2-pruefung 5,3,1,4,2
 
 FLAGS:
   --module-id=N                Module ID to add

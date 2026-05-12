@@ -4,13 +4,13 @@
  * Direct API implementation for the Ratings API v1.
  *
  * Usage:
- *   npm run rating:list [--content-type=...] [--page=N] [--per-page=N]
- *   npm run rating:get <id>
- *   npm run rating:summary --content-type=... [--content-id=N]
- *   npm run rating:user --content-type=... [--content-id=N]
- *   npm run rating:create --content-type=... --rating=N [--content-id=N] [--comment="..."]
- *   npm run rating:update <id> -- [--rating=N] [--comment="..."]
- *   npm run rating:delete <id> -- --confirm
+ *   lernplattform rating list [--content-type=...] [--page=N] [--per-page=N]
+ *   lernplattform rating get <id>
+ *   lernplattform rating summary --content-type=... [--content-id=N]
+ *   lernplattform rating user --content-type=... [--content-id=N]
+ *   lernplattform rating create --content-type=... --rating=N [--content-id=N] [--comment="..."]
+ *   lernplattform rating update <id> -- [--rating=N] [--comment="..."]
+ *   lernplattform rating delete <id> --confirm
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag, getTextData } from '../utils/args';
@@ -462,7 +462,7 @@ export async function run(argv: string[]): Promise<void> {
           console.error(JSON.stringify({
             error: 'Missing required flag: --content-type',
             valid_types: VALID_CONTENT_TYPES,
-            example: 'npm run rating:summary -- --content-type=lesson --content-id=123'
+            example: 'lernplattform rating summary --content-type=lesson --content-id=123'
           }, null, 2));
           process.exit(1);
         }
@@ -479,7 +479,7 @@ export async function run(argv: string[]): Promise<void> {
         if (contentType !== 'platform' && !contentIdStr) {
           console.error(JSON.stringify({
             error: `--content-id is required for content type: ${contentType}`,
-            example: `npm run rating:summary -- --content-type=${contentType} --content-id=123`
+            example: `lernplattform rating summary --content-type=${contentType} --content-id=123`
           }, null, 2));
           process.exit(1);
         }
@@ -497,7 +497,7 @@ export async function run(argv: string[]): Promise<void> {
           console.error(JSON.stringify({
             error: 'Missing required flag: --content-type',
             valid_types: VALID_CONTENT_TYPES,
-            example: 'npm run rating:user -- --content-type=lesson --content-id=123'
+            example: 'lernplattform rating user --content-type=lesson --content-id=123'
           }, null, 2));
           process.exit(1);
         }
@@ -514,7 +514,7 @@ export async function run(argv: string[]): Promise<void> {
         if (contentType !== 'platform' && !contentIdStr) {
           console.error(JSON.stringify({
             error: `--content-id is required for content type: ${contentType}`,
-            example: `npm run rating:user -- --content-type=${contentType} --content-id=123`
+            example: `lernplattform rating user --content-type=${contentType} --content-id=123`
           }, null, 2));
           process.exit(1);
         }
@@ -561,7 +561,7 @@ export async function run(argv: string[]): Promise<void> {
         if (contentType !== 'platform' && !contentIdStr) {
           console.error(JSON.stringify({
             error: `--content-id is required for content type: ${contentType}`,
-            example: `npm run rating:create -- --content-type=${contentType} --content-id=123 --rating=5`
+            example: `lernplattform rating create --content-type=${contentType} --content-id=123 --rating=5`
           }, null, 2));
           process.exit(1);
         }
@@ -689,7 +689,7 @@ function printHelp() {
   console.log(`Rating CLI - Manage content ratings
 
 USAGE:
-  npm run rating:<operation> [args] [flags]
+  lernplattform rating <operation> [args] [flags]
 
 OPERATIONS:
   list                List all ratings (paginated, filterable)
@@ -710,34 +710,34 @@ CONTENT TYPES:
 EXAMPLES:
 
   LIST RATINGS:
-    npm run rating:list
-    npm run rating:list -- --content-type=lesson --content-id=123
-    npm run rating:list -- --min-rating=4 --has-comment=true --sort=-created_at
-    npm run rating:list -- --page=2 --per-page=10
-    npm run rating:list -- --user-id=42
-    npm run rating:list -- --reviewed=false
+    lernplattform rating list
+    lernplattform rating list --content-type=lesson --content-id=123
+    lernplattform rating list --min-rating=4 --has-comment=true --sort=-created_at
+    lernplattform rating list --page=2 --per-page=10
+    lernplattform rating list --user-id=42
+    lernplattform rating list --reviewed=false
 
   GET RATING:
-    npm run rating:get 1
+    lernplattform rating get 1
 
   GET RATING SUMMARY (Statistics):
-    npm run rating:summary -- --content-type=lesson --content-id=123
-    npm run rating:summary -- --content-type=learning_path --content-id=1
-    npm run rating:summary -- --content-type=platform
+    lernplattform rating summary --content-type=lesson --content-id=123
+    lernplattform rating summary --content-type=learning_path --content-id=1
+    lernplattform rating summary --content-type=platform
 
   GET USER RATING (own rating for content):
-    npm run rating:user -- --content-type=lesson --content-id=123
-    npm run rating:user -- --content-type=platform
+    lernplattform rating user --content-type=lesson --content-id=123
+    lernplattform rating user --content-type=platform
 
   CREATE RATING (Basic):
-    npm run rating:create -- --content-type=lesson --content-id=123 --rating=5
-    npm run rating:create -- --content-type=lesson --content-id=123 --rating=5 --comment="Super!"
+    lernplattform rating create --content-type=lesson --content-id=123 --rating=5
+    lernplattform rating create --content-type=lesson --content-id=123 --rating=5 --comment="Super!"
 
   CREATE RATING (Platform, no content-id):
-    npm run rating:create -- --content-type=platform --rating=5 --comment="Tolle Plattform!"
+    lernplattform rating create --content-type=platform --rating=5 --comment="Tolle Plattform!"
 
   CREATE RATING (with long comment using heredoc):
-    npm run rating:create -- --content-type=lesson --content-id=123 --rating=5 --comment-stdin <<'EOF'
+    lernplattform rating create --content-type=lesson --content-id=123 --rating=5 --comment-stdin <<'EOF'
     Sehr gut erklaert! Besonders gefallen hat mir:
     - Die klare Struktur
     - Die praktischen Beispiele
@@ -745,16 +745,16 @@ EXAMPLES:
     EOF
 
   CREATE RATING (with Base64 comment):
-    npm run rating:create -- --content-type=lesson --content-id=123 --rating=5 \\
+    lernplattform rating create --content-type=lesson --content-id=123 --rating=5 \\
       --comment-base64="$(echo 'Toller Inhalt!' | base64)"
 
   UPDATE RATING:
-    npm run rating:update 1 -- --rating=4
-    npm run rating:update 1 -- --comment="Nach erneutem Durchgehen: Sehr gut!"
-    npm run rating:update 1 -- --rating=4 --comment="Aktualisierte Bewertung"
+    lernplattform rating update 1 --rating=4
+    lernplattform rating update 1 --comment="Nach erneutem Durchgehen: Sehr gut!"
+    lernplattform rating update 1 --rating=4 --comment="Aktualisierte Bewertung"
 
   DELETE RATING:
-    npm run rating:delete 1 -- --confirm
+    lernplattform rating delete 1 --confirm
 
 REQUIRED FLAGS (for operations):
   summary:
@@ -828,11 +828,29 @@ RESPONSE FORMAT:
       }
     }
 
+WORKFLOWS (verkettet mit anderen Bereichen):
+
+  Schlechteste Lessons in einem Modul finden (ueber content-items, nicht .lessons!):
+    MODULE_SLUG="docker-grundlagen-v3"
+    lernplattform content-items list "$MODULE_SLUG" 2>/dev/null \\
+      | jq -r '.data[] | select(.content_type_key=="lesson") | .content_id' \\
+      | while read -r LID; do
+          AVG=$(lernplattform rating summary --content-type=lesson --content-id="$LID" 2>/dev/null \\
+                | jq -r '.data.average // "n/a"')
+          echo "$LID  avg=$AVG"
+        done | sort -k3
+    # Hinweis: 'module get .lessons' ist ein legacy-Feld und fuer neuere Module oft leer.
+
+  Alle unreviewten kritischen Bewertungen (<=2) anzeigen:
+    lernplattform rating list --max-rating=2 --reviewed=false --has-comment=true --sort=-created_at \\
+      | jq '.data[] | {id, rating, content_type, content_title, comment}'
+
 OUTPUT:
-  All commands return raw JSON from the API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
   Use jq for custom formatting:
-    npm run rating:list | jq '.data[] | "\\(.id) \\(.rating) stars"'
-    npm run rating:summary -- --content-type=lesson --content-id=123 | jq '.data.average'
+    lernplattform rating list | jq '.data[] | "\\(.id) \\(.rating) stars"'
+    lernplattform rating summary --content-type=lesson --content-id=123 | jq '.data.average'
 
 NOTES:
   - Rating must be between 1 and 5

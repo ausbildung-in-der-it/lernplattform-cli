@@ -4,14 +4,14 @@
  * Direct API implementation for the Discussions API v1.
  *
  * Usage:
- *   npm run discussion:list [--status=open|solved|all] [--page=N] [--limit=N]
- *   npm run discussion:get <thread-id>
- *   npm run discussion:comment <thread-id> -- --content="..." --author-email="..."
- *   npm run discussion:solve <thread-id> -- --actor-email="..." [--accepted-comment-id=N]
- *   npm run discussion:unsolve <thread-id> -- --actor-email="..."
- *   npm run discussion:update-comment <comment-id> -- --content="..." --actor-email="..."
- *   npm run discussion:delete-comment <comment-id> -- --actor-email="..." --confirm
- *   npm run discussion:accept <comment-id> -- --actor-email="..."
+ *   lernplattform discussion list [--status=open|solved|all] [--page=N] [--limit=N]
+ *   lernplattform discussion get <thread-id>
+ *   lernplattform discussion comment <thread-id> --content="..." --author-email="..."
+ *   lernplattform discussion solve <thread-id> --actor-email="..." [--accepted-comment-id=N]
+ *   lernplattform discussion unsolve <thread-id> --actor-email="..."
+ *   lernplattform discussion update-comment <comment-id> --content="..." --actor-email="..."
+ *   lernplattform discussion delete-comment <comment-id> --actor-email="..." --confirm
+ *   lernplattform discussion accept <comment-id> --actor-email="..."
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag, getTextData } from '../utils/args';
@@ -547,7 +547,7 @@ export async function run(argv: string[]): Promise<void> {
         if (!actorEmail) {
           console.error(JSON.stringify({
             error: 'Missing required field: --actor-email',
-            example: 'npm run discussion:solve 123 -- --actor-email="support@ausbildung-in-der-it.de"'
+            example: 'lernplattform discussion solve 123 --actor-email="support@ausbildung-in-der-it.de"'
           }, null, 2));
           process.exit(1);
         }
@@ -580,7 +580,7 @@ export async function run(argv: string[]): Promise<void> {
         if (!actorEmail) {
           console.error(JSON.stringify({
             error: 'Missing required field: --actor-email',
-            example: 'npm run discussion:unsolve 123 -- --actor-email="support@ausbildung-in-der-it.de"'
+            example: 'lernplattform discussion unsolve 123 --actor-email="support@ausbildung-in-der-it.de"'
           }, null, 2));
           process.exit(1);
         }
@@ -634,7 +634,7 @@ export async function run(argv: string[]): Promise<void> {
         if (!actorEmail) {
           console.error(JSON.stringify({
             error: 'Missing required field: --actor-email',
-            example: 'npm run discussion:delete-comment 789 -- --actor-email="support@ausbildung-in-der-it.de" --confirm'
+            example: 'lernplattform discussion delete-comment 789 --actor-email="support@ausbildung-in-der-it.de" --confirm'
           }, null, 2));
           process.exit(1);
         }
@@ -663,7 +663,7 @@ export async function run(argv: string[]): Promise<void> {
         if (!actorEmail) {
           console.error(JSON.stringify({
             error: 'Missing required field: --actor-email',
-            example: 'npm run discussion:accept 789 -- --actor-email="support@ausbildung-in-der-it.de"'
+            example: 'lernplattform discussion accept 789 --actor-email="support@ausbildung-in-der-it.de"'
           }, null, 2));
           process.exit(1);
         }
@@ -695,7 +695,7 @@ function printHelp() {
   console.log(`Discussion CLI - Manage discussion threads and comments
 
 USAGE:
-  npm run discussion:<operation> [args] [flags]
+  lernplattform discussion <operation> [args] [flags]
 
 OPERATIONS:
   list                       List discussion threads (paginated)
@@ -715,19 +715,19 @@ THREAD STATUS VALUES:
 EXAMPLES:
 
   LIST THREADS:
-    npm run discussion:list
-    npm run discussion:list -- --status=open --limit=10
-    npm run discussion:list -- --status=solved --page=2
-    npm run discussion:list -- --status=all --limit=50
+    lernplattform discussion list
+    lernplattform discussion list --status=open --limit=10
+    lernplattform discussion list --status=solved --page=2
+    lernplattform discussion list --status=all --limit=50
 
   GET SINGLE THREAD (with comments):
-    npm run discussion:get 123
+    lernplattform discussion get 123
 
   CREATE COMMENT:
-    npm run discussion:comment 123 -- --content="Hier ist meine Antwort..." --author-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion comment 123 --content="Hier ist meine Antwort..." --author-email="support@ausbildung-in-der-it.de"
 
   CREATE COMMENT (with heredoc for long content):
-    npm run discussion:comment 123 -- --author-email="support@ausbildung-in-der-it.de" --content-stdin <<'EOF'
+    lernplattform discussion comment 123 --author-email="support@ausbildung-in-der-it.de" --content-stdin <<'EOF'
     LEFT JOIN gibt alle Zeilen aus der linken Tabelle zurueck,
     auch wenn es keine passenden Zeilen in der rechten Tabelle gibt.
 
@@ -736,26 +736,26 @@ EXAMPLES:
     EOF
 
   CREATE COMMENT (with Base64 content):
-    npm run discussion:comment 123 -- --author-email="support@ausbildung-in-der-it.de" \\
+    lernplattform discussion comment 123 --author-email="support@ausbildung-in-der-it.de" \\
       --content-base64="$(echo 'Meine Antwort' | base64)"
 
   MARK THREAD AS SOLVED:
-    npm run discussion:solve 123 -- --actor-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion solve 123 --actor-email="support@ausbildung-in-der-it.de"
 
   MARK THREAD AS SOLVED (with accepted answer):
-    npm run discussion:solve 123 -- --actor-email="support@ausbildung-in-der-it.de" --accepted-comment-id=789
+    lernplattform discussion solve 123 --actor-email="support@ausbildung-in-der-it.de" --accepted-comment-id=789
 
   MARK THREAD AS UNSOLVED:
-    npm run discussion:unsolve 123 -- --actor-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion unsolve 123 --actor-email="support@ausbildung-in-der-it.de"
 
   UPDATE COMMENT:
-    npm run discussion:update-comment 789 -- --content="Korrigierte Antwort..." --actor-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion update-comment 789 --content="Korrigierte Antwort..." --actor-email="support@ausbildung-in-der-it.de"
 
   DELETE COMMENT:
-    npm run discussion:delete-comment 789 -- --actor-email="support@ausbildung-in-der-it.de" --confirm
+    lernplattform discussion delete-comment 789 --actor-email="support@ausbildung-in-der-it.de" --confirm
 
   ACCEPT COMMENT AS ANSWER:
-    npm run discussion:accept 789 -- --actor-email="support@ausbildung-in-der-it.de"
+    lernplattform discussion accept 789 --actor-email="support@ausbildung-in-der-it.de"
 
 REQUIRED FLAGS:
 
@@ -838,11 +838,33 @@ RESPONSE FORMAT:
       "data": { "id": 123, "is_solved": true, "accepted_comment_id": 789 }
     }
 
+WORKFLOWS (verkettet, typischer Support-Flow):
+
+  Naechsten offenen Thread holen, Kontext lesen, antworten, schliessen:
+    ADMIN="support@ausbildung-in-der-it.de"
+    THREAD=$(lernplattform discussion list --status=open --limit=1 2>/dev/null \\
+      | jq '.data[0].id')
+    lernplattform discussion get "$THREAD" \\
+      | jq '{title: .data.title, lesson: .data.context.lesson.slug, content: .data.content}'
+    lernplattform discussion comment "$THREAD" --author-email="$ADMIN" --content-stdin <<'EOF'
+    Die Aufloesung erfolgt ueber den Resolver des Betriebssystems...
+    EOF
+    # Antwort als akzeptiert markieren -> Thread schliessen:
+    NEW_COMMENT=$(lernplattform discussion get "$THREAD" 2>/dev/null \\
+      | jq '.data.comments[-1].id')
+    lernplattform discussion solve "$THREAD" \\
+      --actor-email="$ADMIN" --accepted-comment-id="$NEW_COMMENT"
+
+  Alle offenen Threads zaehlen, gruppiert nach Lesson:
+    lernplattform discussion list --status=open --limit=100 \\
+      | jq '.data | group_by(.context.lesson.slug) | map({slug: .[0].context.lesson.slug, count: length})'
+
 OUTPUT:
-  All commands return raw JSON from the API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
   Use jq for custom formatting:
-    npm run discussion:list | jq '.data[] | "\\(.id) - \\(.title)"'
-    npm run discussion:get 123 | jq '.data.comments | length'
+    lernplattform discussion list | jq '.data[] | "\\(.id) - \\(.title)"'
+    lernplattform discussion get 123 | jq '.data.comments | length'
 
 NOTES:
   - Content maximum length is 10,000 characters

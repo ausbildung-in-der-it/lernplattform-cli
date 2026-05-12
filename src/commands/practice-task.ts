@@ -4,11 +4,11 @@
  * Direct API implementation without tool dependency.
  *
  * Usage:
- *   npm run practice:list [--page=N] [--module-id=N] [--search="..."]
- *   npm run practice:get <slug>
- *   npm run practice:create --title="..." --slug="..."
- *   npm run practice:update <slug> -- --difficulty="..."
- *   npm run practice:delete <slug> -- --confirm
+ *   lernplattform practice list [--page=N] [--module-id=N] [--search="..."]
+ *   lernplattform practice get <slug>
+ *   lernplattform practice create --title="..." --slug="..."
+ *   lernplattform practice update <slug> --difficulty="..."
+ *   lernplattform practice delete <slug> --confirm
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag, getTextData } from '../utils/args';
@@ -419,7 +419,7 @@ function printHelp() {
   console.log(`Practice Task CLI - Manage practice tasks
 
 USAGE:
-  npm run practice:<operation> [args] [flags]
+  lernplattform practice <operation> [args] [flags]
 
 OPERATIONS:
   list                List all practice tasks
@@ -431,18 +431,18 @@ OPERATIONS:
 EXAMPLES:
 
   List Practice Tasks:
-    npm run practice:list
-    npm run practice:list -- --page=2 --per-page=10
-    npm run practice:list -- --module-id=17
-    npm run practice:list -- --search="nslookup"
-    npm run practice:list -- --module-id=17 --search="DNS"
+    lernplattform practice list
+    lernplattform practice list --page=2 --per-page=10
+    lernplattform practice list --module-id=17
+    lernplattform practice list --search="nslookup"
+    lernplattform practice list --module-id=17 --search="DNS"
 
   Get Practice Task:
-    npm run practice:get anwendung-von-nslookup
-    npm run practice:get task-slug -- --save-to-file
+    lernplattform practice get anwendung-von-nslookup
+    lernplattform practice get task-slug --save-to-file
 
   Create Practice Task (Basic):
-    npm run practice:create \\
+    lernplattform practice create \\
       --title="DNS Troubleshooting mit nslookup" \\
       --slug="dns-troubleshooting-nslookup" \\
       --module-id=17 \\
@@ -450,7 +450,7 @@ EXAMPLES:
       --description="Lerne DNS-Probleme mit nslookup zu diagnostizieren"
 
   Create Practice Task with Markdown Content (Heredoc):
-    npm run practice:create \\
+    lernplattform practice create \\
       --title="Arrays sortieren" \\
       --slug="arrays-sortieren" \\
       --module-id=5 \\
@@ -501,7 +501,7 @@ EXAMPLES:
     \`\`\`
     EOF
     )
-    npm run practice:create \\
+    lernplattform practice create \\
       --title="REST API mit Express" \\
       --slug="rest-api-express" \\
       --module-id=10 \\
@@ -510,24 +510,24 @@ EXAMPLES:
       --solution-markdown-base64="\$SOLUTION_CONTENT"
 
   Update Practice Task:
-    npm run practice:update dns-troubleshooting -- --difficulty="schwer"
-    npm run practice:update task-slug -- --title="Neuer Titel"
-    npm run practice:update task-slug -- \\
+    lernplattform practice update dns-troubleshooting --difficulty="schwer"
+    lernplattform practice update task-slug --title="Neuer Titel"
+    lernplattform practice update task-slug -- \\
       --description="Aktualisierte Beschreibung" \\
       --difficulty="einfach"
 
   Update Task Content with Heredoc:
-    npm run practice:update arrays-sortieren -- --task-markdown-stdin <<'EOF'
+    lernplattform practice update arrays-sortieren --task-markdown-stdin <<'EOF'
     # Aktualisierte Aufgabe
 
     Implementiere Quicksort statt Bubblesort.
     EOF
 
   Delete Practice Task:
-    npm run practice:delete old-task -- --confirm
+    lernplattform practice delete old-task --confirm
 
   Backup Before Changes:
-    npm run practice:get my-task -- --save-to-file
+    lernplattform practice get my-task --save-to-file
 
 FLAGS:
   List Operation:
@@ -577,7 +577,7 @@ DIFFICULTY LEVELS:
 COMMON WORKFLOWS:
 
   1. Create Practice Task with Full Content:
-     npm run practice:create \\
+     lernplattform practice create \\
        --title="Meine Aufgabe" \\
        --slug="meine-aufgabe" \\
        --module-id=5 \\
@@ -591,12 +591,12 @@ COMMON WORKFLOWS:
      SOLUTION_EOF
 
   2. Update Task Content from File:
-     cat task-content.md | npm run practice:update my-task -- --task-markdown-stdin
-     cat solution.md | npm run practice:update my-task -- --solution-markdown-stdin
+     cat task-content.md | lernplattform practice update my-task --task-markdown-stdin
+     cat solution.md | lernplattform practice update my-task --solution-markdown-stdin
 
   3. Backup Before Major Changes:
-     npm run practice:get my-task -- --save-to-file
-     npm run practice:update my-task -- --difficulty="schwer"
+     lernplattform practice get my-task --save-to-file
+     lernplattform practice update my-task --difficulty="schwer"
 
 OUTPUT:
   Raw JSON from API.

@@ -4,11 +4,11 @@
  * Direct API implementation without tool dependency.
  *
  * Usage:
- *   npm run path:list [--page=N] [--per-page=N]
- *   npm run path:get <slug>
- *   npm run path:create --title="..." --slug="..." --status="draft"
- *   npm run path:update <slug> -- --title="..."
- *   npm run path:delete <slug> -- --confirm
+ *   lernplattform path list [--page=N] [--per-page=N]
+ *   lernplattform path get <slug>
+ *   lernplattform path create --title="..." --slug="..." --status="draft"
+ *   lernplattform path update <slug> --title="..."
+ *   lernplattform path delete <slug> --confirm
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag } from '../utils/args';
@@ -407,7 +407,7 @@ function printHelp() {
   console.log(`Learning Path CLI - Manage learning paths
 
 USAGE:
-  npm run path:<operation> [args] [flags]
+  lernplattform path <operation> [args] [flags]
 
 OPERATIONS:
   list                List all learning paths
@@ -419,29 +419,29 @@ OPERATIONS:
 EXAMPLES:
 
   List Learning Paths:
-    npm run path:list
-    npm run path:list -- --page=2 --per-page=10
-    npm run path:list -- --json
+    lernplattform path list
+    lernplattform path list --page=2 --per-page=10
+    lernplattform path list --json
 
   Get Learning Path:
-    npm run path:get ap-teil-2-fisi
-    npm run path:get ap-teil-2-fisi -- --json
-    npm run path:get ap-teil-2-fisi -- --save-to-file
+    lernplattform path get ap-teil-2-fisi
+    lernplattform path get ap-teil-2-fisi --json
+    lernplattform path get ap-teil-2-fisi --save-to-file
 
   Create Learning Path:
-    npm run path:create \\
+    lernplattform path create \\
       --title="AP Teil 2 FISI" \\
       --slug="ap-teil-2-fisi" \\
       --status="published"
 
-    npm run path:create \\
+    lernplattform path create \\
       --title="Schnupperkurs JavaScript" \\
       --slug="schnupperkurs-javascript" \\
       --status="published" \\
       --description="Lerne die Grundlagen von JavaScript" \\
       --is-preview=true
 
-    npm run path:create \\
+    lernplattform path create \\
       --title="Premium SQL Kurs" \\
       --slug="premium-sql" \\
       --status="published" \\
@@ -449,17 +449,17 @@ EXAMPLES:
       --access-duration=6
 
   Update Learning Path:
-    npm run path:update ap-teil-2-fisi -- --title="AP Teil 2 FISI (2025)"
+    lernplattform path update ap-teil-2-fisi --title="AP Teil 2 FISI (2025)"
 
-    npm run path:update schnupperkurs-javascript \\
-      -- --title="JavaScript Crashkurs" \\
+    lernplattform path update schnupperkurs-javascript \\
+      --title="JavaScript Crashkurs" \\
       --description="Schnelleinstieg in JavaScript" \\
       --status="published"
 
-    npm run path:update premium-sql -- --price-id="price_0987654321"
+    lernplattform path update premium-sql --price-id="price_0987654321"
 
   Delete Learning Path:
-    npm run path:delete old-path -- --confirm
+    lernplattform path delete old-path --confirm
 
 FLAGS:
 
@@ -485,17 +485,34 @@ FLAGS:
     --json                Output raw JSON
     --help                Show this help message
 
+WORKFLOWS (verkettet mit anderen Bereichen):
+
+  Kompletten Lernpfad aufbauen (3 Bereiche, gleiche Reihenfolge wie das Datenmodell):
+    # 1) Lernpfad anlegen
+    lernplattform path create --title="FIAE AP2" --slug="fiae-ap2" --status=draft
+    # 2) Bereits existierende Module dem Lernpfad zuordnen (Modul-IDs aus module list/get)
+    MOD_DB=$(lernplattform module get relationale-datenbanken 2>/dev/null | jq '.id')
+    MOD_NET=$(lernplattform module get netzwerke 2>/dev/null | jq '.id')
+    lernplattform path-modules create fiae-ap2 --module-id="$MOD_DB" --position=0
+    lernplattform path-modules create fiae-ap2 --module-id="$MOD_NET" --position=1
+    # 3) Pruefen ('path get' liefert Felder direkt am Root, inkl. .modules)
+    lernplattform path get fiae-ap2 | jq '.modules[] | {id, title, position}'
+
+  Alle Module eines Lernpfads listen (zum Reorder vorbereiten):
+    lernplattform path-modules list fiae-ap2 \\
+      | jq -r '.data | sort_by(.position) | .[].id' | paste -sd, -
+
 OUTPUT:
-  Raw JSON from API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
 
 NOTES:
-  - All learning path management commands output JSON to stdout
-  - Progress/debug messages are sent to stderr
+  - Alle learning-path-Befehle geben JSON auf stdout aus
+  - Status-/Debug-Meldungen gehen auf stderr (mit 2>/dev/null ausblenden fuer Pipes)
   - Use --save-to-file with 'get' to backup before changes
   - Backup location: backups/path/path_{slug}_{timestamp}.json
   - The 'get' operation includes all modules in the learning path
-  - Use path-modules:* commands to manage modules in a learning path
-  - Use --json flag for scripting and programmatic access
+  - Verwende 'lernplattform path-modules ...' fuer Modulzuordnungen, nicht 'path' selbst
 `);
 }
 

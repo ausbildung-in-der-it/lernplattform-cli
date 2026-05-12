@@ -4,13 +4,13 @@
  * Direct API implementation without tool dependency.
  *
  * Usage:
- *   npm run blocks:list <lesson-slug>
- *   npm run blocks:get <lesson-slug> <block-id>
- *   npm run blocks:create <lesson-slug> --type="textBlock" --section="hook" --data='{...}'
- *   npm run blocks:update <lesson-slug> <block-id> -- --data='{...}'
- *   npm run blocks:delete <lesson-slug> <block-id> -- --confirm
- *   npm run blocks:reorder <lesson-slug> id1,id2,id3
- *   npm run blocks:bulk <lesson-slug> --blocks='[...]'
+ *   lernplattform blocks list <lesson-slug>
+ *   lernplattform blocks get <lesson-slug> <block-id>
+ *   lernplattform blocks create <lesson-slug> --type="textBlock" --section="hook" --data='{...}'
+ *   lernplattform blocks update <lesson-slug> <block-id> --data='{...}'
+ *   lernplattform blocks delete <lesson-slug> <block-id> --confirm
+ *   lernplattform blocks reorder <lesson-slug> id1,id2,id3
+ *   lernplattform blocks bulk <lesson-slug> --blocks='[...]'
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag, getJsonData } from '../utils/args';
@@ -481,7 +481,7 @@ function printHelp() {
   console.log(`Blocks CLI - Manage lesson blocks
 
 USAGE:
-  npm run blocks:<operation> [args] [flags]
+  lernplattform blocks <operation> [args] [flags]
 
 OPERATIONS:
   list <lesson-slug>              List all blocks in a lesson
@@ -495,19 +495,19 @@ OPERATIONS:
 EXAMPLES:
 
   # List blocks
-  npm run blocks:list sql-grundlagen
+  lernplattform blocks list sql-grundlagen
 
   # Get specific block
-  npm run blocks:get sql-grundlagen abc123defg
+  lernplattform blocks get sql-grundlagen abc123defg
 
   # Create text block
-  npm run blocks:create sql-grundlagen \\
+  lernplattform blocks create sql-grundlagen \\
     --type="textBlock" \\
     --section="knowledge1" \\
     --data='{"title":"SQL Einführung","content":"SQL ist..."}'
 
   # Create quiz block (full example)
-  npm run blocks:create sql-grundlagen \\
+  lernplattform blocks create sql-grundlagen \\
     --type="interactiveQuiz" \\
     --section="quiz1" \\
     --data='{
@@ -525,27 +525,27 @@ EXAMPLES:
     }'
 
   # Create with position
-  npm run blocks:create sql-grundlagen \\
+  lernplattform blocks create sql-grundlagen \\
     --type="textBlock" \\
     --section="knowledge2" \\
     --data='{"title":"Titel","content":"Inhalt"}' \\
     --position=5
 
   # Update block data
-  npm run blocks:update sql-grundlagen abc123defg \\
+  lernplattform blocks update sql-grundlagen abc123defg \\
     --data='{"title":"Updated Title","content":"Updated content"}'
 
   # Change block section
-  npm run blocks:update sql-grundlagen abc123defg -- --section="knowledge2"
+  lernplattform blocks update sql-grundlagen abc123defg --section="knowledge2"
 
   # Delete block
-  npm run blocks:delete sql-grundlagen abc123defg -- --confirm
+  lernplattform blocks delete sql-grundlagen abc123defg --confirm
 
   # Reorder blocks
-  npm run blocks:reorder sql-grundlagen abc123,xyz789,quiz456
+  lernplattform blocks reorder sql-grundlagen abc123,xyz789,quiz456
 
   # Bulk update
-  npm run blocks:bulk sql-grundlagen \\
+  lernplattform blocks bulk sql-grundlagen \\
     --operation="update" \\
     --blocks='[
       {"id":"abc123","section":"updated_section"},
@@ -553,7 +553,7 @@ EXAMPLES:
     ]'
 
   # Bulk delete
-  npm run blocks:bulk sql-grundlagen \\
+  lernplattform blocks bulk sql-grundlagen \\
     --operation="delete" \\
     --blocks='[
       {"id":"abc123"},
@@ -588,10 +588,10 @@ SECTION NAMES:
 JSON INPUT METHODS (for complex data with newlines/special chars):
   # Method 1: Base64 encoding (recommended for scripts)
   echo '{"title":"Test","content":"Line 1\\n\\nLine 2"}' | base64
-  npm run blocks:create lesson -- --type="textBlock" --section="hook" --data-base64="eyJ0aXRsZSI6..."
+  lernplattform blocks create lesson --type="textBlock" --section="hook" --data-base64="eyJ0aXRsZSI6..."
 
   # Method 2: Heredoc (recommended for interactive use)
-  npm run blocks:create lesson -- --type="textBlock" --section="hook" --data-stdin <<'EOF'
+  lernplattform blocks create lesson --type="textBlock" --section="hook" --data-stdin <<'EOF'
   {
     "title": "Mein Titel",
     "content": "Zeile 1\\n\\nZeile 2 mit Umlaut: oe"
@@ -599,13 +599,32 @@ JSON INPUT METHODS (for complex data with newlines/special chars):
   EOF
 
   # Method 3: Pipe from file
-  cat block-data.json | npm run blocks:create lesson -- --type="textBlock" --section="hook" --data-stdin
+  cat block-data.json | lernplattform blocks create lesson --type="textBlock" --section="hook" --data-stdin
+
+WORKFLOWS (verkettet mit anderen Bereichen):
+
+  Block-IDs in aktueller Reihenfolge ermitteln, dann gezielt umsortieren:
+    IDS=$(lernplattform blocks list sql-grundlagen 2>/dev/null \\
+      | jq -r 'sort_by(.position) | .[].id' | paste -sd, -)
+    echo "Aktuelle Reihenfolge: $IDS"
+    # Reorder mit angepasster Liste (alle IDs angeben, kein Partial-Reorder):
+    lernplattform blocks reorder sql-grundlagen "id1,id3,id2,id4,id5"
+
+  Alle Quiz-Blocks einer Lesson finden:
+    lernplattform blocks list sql-grundlagen \\
+      | jq '.[] | select(.type=="interactiveQuiz") | {id, section}'
+
+  Bild hochladen und in Block einsetzen:
+    URL=$(lernplattform image-upload ./diagram.png --json 2>/dev/null | jq -r '.url')
+    lernplattform blocks update sql-grundlagen abc123 \\
+      --data="{\\"content\\":\\"![Diagramm](${URL})\\"}"
 
 OUTPUT:
-  All commands return raw JSON from the API.
+  stdout = reines JSON aus der API. stderr = Status-/Debug-Logs.
+  Exit 0 = Erfolg. Exit 1 = stderr enthaelt {"error": "..."}.
   Use jq for custom formatting:
-    npm run blocks:list lesson | jq '.[] | select(.type == "interactiveQuiz")'
-    npm run blocks:get lesson id | jq '.data'
+    lernplattform blocks list lesson | jq '.[] | select(.type == "interactiveQuiz")'
+    lernplattform blocks get lesson id | jq '.data'
 `);
 }
 

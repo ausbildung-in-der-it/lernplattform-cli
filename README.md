@@ -4,30 +4,86 @@ Command-Line-Interface für die [ausbildung-in-der-it.de](https://app.ausbildung
 
 ## Installation
 
-### Global über GitHub (empfohlen, via bun)
+### Empfohlen: global für Mitarbeitende
 
 ```bash
 bun install -g github:ausbildung-in-der-it/lernplattform-cli
+lernplattform --version
 ```
 
 Nach der Installation steht der Befehl `lernplattform` global zur Verfügung.
 
-> **Warum bun statt npm?** `npm install -g github:...` hat aktuell einen bekannten Bug: das Package wird als Symlink in das npm-Cache-tmp-Verzeichnis gelegt, das nach dem Install gelöscht wird. Resultat: kaputter Symlink. `bun install -g github:...` funktioniert sauber. Wer bun nicht hat: `curl -fsSL https://bun.sh/install | bash`.
+> **Warum bun statt npm?** `npm install -g github:...` kann je nach npm-Konfiguration einen kaputten Symlink erzeugen: das Package wird auf ein npm-Cache-tmp-Verzeichnis verlinkt, das nach dem Install gelöscht wird. `bun install -g github:...` installiert diesen GitHub-Stand sauber. Wer bun nicht hat: `curl -fsSL https://bun.sh/install | bash`.
 
-### Alternative: Lokal klonen und linken
+### Bun installieren
+
+macOS und Linux:
+
+```bash
+curl -fsSL https://bun.com/install | bash
+```
+
+Windows:
+
+```powershell
+powershell -c "irm bun.sh/install.ps1|iex"
+```
+
+Mit npm:
+
+```bash
+npm install -g bun
+```
+
+Weitere Informationen: <https://bun.com/docs/installation>
+
+### Alternative: npm mit Workaround
+
+Falls npm zwingend verwendet werden soll, muss der GitHub-Install mit `install-links=true` laufen:
+
+```bash
+npm install -g --install-links=true github:ausbildung-in-der-it/lernplattform-cli
+lernplattform --version
+```
+
+Langfristig ist ein versionierter Release-Tarball oder ein Registry-Package besser als ein GitHub-Install von `main`, weil Updates dann explizit an Versionen gebunden sind.
+
+### Lokale Entwicklung
 
 ```bash
 git clone git@github.com:ausbildung-in-der-it/lernplattform-cli.git
 cd lernplattform-cli
 npm install
 npm run build
-npm link
+bun link        # registriert das Package
+bun link lernplattform-cli   # legt den globalen Symlink an
+```
+
+Danach zeigt der globale Befehl `lernplattform` auf den lokalen Checkout. Das ist der richtige Workflow, wenn aktiv an der CLI entwickelt wird: nach `npm run build` ist die neue Version sofort global aktiv, ohne erneutes Installieren. Für laufende Entwicklung in einem zweiten Terminal `npm run dev` starten.
+
+`npm link` funktioniert ebenfalls. Beide Wege erzeugen einen Symlink in der jeweiligen globalen `bin/`.
+
+> **Nicht `bun install -g .` aus dem Projektordner.** Das triggert in bun 1.3.x einen Bug: `error: Package "@" has a dependency loop`. Stattdessen `bun link` benutzen (siehe oben). Hintergrund: bun interpretiert den `.`-Pfad als Self-Referenz und gerät in eine Auflösungs-Schleife.
+
+Zum Entfernen des lokalen Links:
+
+```bash
+bun unlink lernplattform-cli   # im Projektordner
+bun remove -g lernplattform-cli   # global, falls noch ein Eintrag uebrig ist
+# oder mit npm:
+npm unlink -g lernplattform-cli
 ```
 
 ### Update
 
 ```bash
-bun install -g github:ausbildung-in-der-it/lernplattform-cli   # nochmal ausfuehren, holt main
+bun install -g github:ausbildung-in-der-it/lernplattform-cli
+```
+
+Oder mit npm:
+
+```bash
+npm install -g --install-links=true github:ausbildung-in-der-it/lernplattform-cli
 ```
 
 ## Konfiguration
@@ -100,5 +156,5 @@ Wer das aidi-agents-Repo nutzt: die alten `npm run lesson:get …` Befehle bleib
 ```bash
 npm run dev      # tsup --watch
 npm run build    # einmaliger Build
-npm run smoke    # ruft dist/cli.mjs --help auf
+npm run smoke    # ruft lernplattform --help über bin/lernplattform.mjs auf
 ```

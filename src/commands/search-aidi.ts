@@ -4,7 +4,7 @@
  * Direct API implementation without tool dependency.
  *
  * Usage:
- *   npm run aidi:search "<query>"
+ *   lernplattform search "<query>"
  */
 
 import { parseCliArgs, getRequiredArg } from '../utils/args';
@@ -140,7 +140,7 @@ DESCRIPTION:
   Returns content that matches your query with metadata for navigation.
 
 USAGE:
-  npm run aidi:search "<query>"
+  lernplattform search "<query>"
 
 ARGUMENTS:
   query           Search term or phrase to find in platform content
@@ -150,36 +150,41 @@ FLAGS:
 
 EXAMPLES:
   # Search for networking topics
-  npm run aidi:search "IPv4"
+  lernplattform search "IPv4"
 
   # Find database lessons
-  npm run aidi:search "SQL JOIN"
+  lernplattform search "SQL JOIN"
 
   # Search for command-line tools
-  npm run aidi:search "nslookup"
+  lernplattform search "nslookup"
 
   # Multi-word queries
-  npm run aidi:search "object oriented programming"
+  lernplattform search "object oriented programming"
 
   # Search for specific concepts
-  npm run aidi:search "normalisierung datenbank"
+  lernplattform search "normalisierung datenbank"
 
 OUTPUT FORMAT:
-  Returns JSON with the following structure:
+  Laravel paginator. Treffer in '.data', Gesamtzahl in '.meta.total':
 
   {
-    "results": [
+    "data": [
       {
-        "type": "lesson",              // Content type: lesson, module, practice_task, video
-        "id": 123,                     // Numeric ID
-        "title": "SQL Grundlagen",     // Content title
+        "type": "lesson",              // lesson | module | practice_task | video
+        "id": 123,                     // numeric ID
+        "title": "SQL Grundlagen",
         "slug": "sql-grundlagen",      // URL-friendly identifier
-        "description": "...",          // Content description (null if not available)
-        "module_title": "Datenbanken"  // Parent module title (null for modules)
+        "description": "..."           // null wenn nicht gesetzt
       }
     ],
-    "total": 5                         // Total number of results
+    "links": { "first": "...", "last": "...", "prev": null, "next": "..." },
+    "meta":  { "current_page": 1, "per_page": 15, "total": 5, "last_page": 1 }
   }
+
+  Praktisches jq:
+    .data[]                            # alle Treffer
+    .data[] | select(.type=="lesson")  # nur Lessons
+    .meta.total                        # Gesamtanzahl
 
 USE CASES:
   - Find lessons on specific topics before analysis
@@ -194,10 +199,6 @@ TIPS:
   - Search is case-insensitive
   - Partial matches are included
   - Results include content from title, description, and body
-
-COMPARISON WITH 'npm run search':
-  npm run aidi:search    # Search AIDI platform content (lessons, modules, etc.)
-  npm run search         # Search the web with Perplexity (fact-checking, research)
 
 ENVIRONMENT:
   AIDI_HOST_URL          # API host (default: production)

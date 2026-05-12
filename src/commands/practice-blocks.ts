@@ -4,13 +4,13 @@
  * Direct API implementation without tool dependency.
  *
  * Usage:
- *   npm run practice-blocks:list <practice-task-slug>
- *   npm run practice-blocks:get <practice-task-slug> <block-id>
- *   npm run practice-blocks:create <practice-task-slug> --type="task_description" --data='{...}'
- *   npm run practice-blocks:update <practice-task-slug> <block-id> -- --data='{...}'
- *   npm run practice-blocks:delete <practice-task-slug> <block-id> -- --confirm
- *   npm run practice-blocks:reorder <practice-task-slug> id1,id2,id3
- *   npm run practice-blocks:bulk <practice-task-slug> --blocks='[...]'
+ *   lernplattform practice-blocks list <practice-task-slug>
+ *   lernplattform practice-blocks get <practice-task-slug> <block-id>
+ *   lernplattform practice-blocks create <practice-task-slug> --type="task_description" --data='{...}'
+ *   lernplattform practice-blocks update <practice-task-slug> <block-id> --data='{...}'
+ *   lernplattform practice-blocks delete <practice-task-slug> <block-id> --confirm
+ *   lernplattform practice-blocks reorder <practice-task-slug> id1,id2,id3
+ *   lernplattform practice-blocks bulk <practice-task-slug> --blocks='[...]'
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag, getJsonData } from '../utils/args';
@@ -475,7 +475,7 @@ function printHelp() {
   console.log(`Practice Blocks CLI - Manage practice task blocks
 
 USAGE:
-  npm run practice-blocks:<operation> [args] [flags]
+  lernplattform practice-blocks <operation> [args] [flags]
 
 OPERATIONS:
   list <practice-task-slug>              List all blocks in a practice task
@@ -504,13 +504,13 @@ BLOCK TYPES:
 EXAMPLES:
 
   # List all blocks in a practice task
-  npm run practice-blocks:list dns-troubleshooting
+  lernplattform practice-blocks list dns-troubleshooting
 
   # Get specific block
-  npm run practice-blocks:get dns-troubleshooting abc123defg
+  lernplattform practice-blocks get dns-troubleshooting abc123defg
 
   # Create task_description block (Aufgabenbeschreibung)
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="task_description" \\
     --data='{
       "title": "Szenario: DNS-Probleme diagnostizieren",
@@ -518,7 +518,7 @@ EXAMPLES:
     }'
 
   # Create single_choice block
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="single_choice" \\
     --data='{
       "question": "Welcher DNS-Record-Typ wird fuer E-Mail-Server verwendet?",
@@ -527,7 +527,7 @@ EXAMPLES:
     }'
 
   # Create multiple_choice block
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="multiple_choice" \\
     --data='{
       "question": "Welche der folgenden sind gueltige DNS-Record-Typen?",
@@ -536,7 +536,7 @@ EXAMPLES:
     }'
 
   # Create free_text block (KI-validiert)
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="free_text" \\
     --data='{
       "question": "Erklaere, wie DNS-Aufloesung funktioniert.",
@@ -545,26 +545,26 @@ EXAMPLES:
     }'
 
   # Create with specific position
-  npm run practice-blocks:create dns-troubleshooting \\
+  lernplattform practice-blocks create dns-troubleshooting \\
     --type="task_description" \\
     --data='{"title":"Schritt 2","content":"..."}' \\
     --position=1
 
   # Update block data
-  npm run practice-blocks:update dns-troubleshooting abc123defg \\
+  lernplattform practice-blocks update dns-troubleshooting abc123defg \\
     --data='{"question":"Aktualisierte Frage","options":["A","B","C"]}'
 
   # Change block type
-  npm run practice-blocks:update dns-troubleshooting abc123defg -- --type="multiple_choice"
+  lernplattform practice-blocks update dns-troubleshooting abc123defg --type="multiple_choice"
 
   # Delete block
-  npm run practice-blocks:delete dns-troubleshooting abc123defg -- --confirm
+  lernplattform practice-blocks delete dns-troubleshooting abc123defg --confirm
 
   # Reorder blocks
-  npm run practice-blocks:reorder dns-troubleshooting abc123,xyz789,quiz456
+  lernplattform practice-blocks reorder dns-troubleshooting abc123,xyz789,quiz456
 
   # Bulk update
-  npm run practice-blocks:bulk dns-troubleshooting \\
+  lernplattform practice-blocks bulk dns-troubleshooting \\
     --operation="update" \\
     --blocks='[
       {"id":"abc123","data":{"question":"Neue Frage 1"}},
@@ -572,7 +572,7 @@ EXAMPLES:
     ]'
 
   # Bulk delete
-  npm run practice-blocks:bulk dns-troubleshooting \\
+  lernplattform practice-blocks bulk dns-troubleshooting \\
     --operation="delete" \\
     --blocks='[
       {"id":"abc123"},
@@ -628,10 +628,10 @@ JSON INPUT METHODS (for complex data with newlines/special chars):
 
   # Method 1: Base64 encoding (recommended for scripts)
   echo '{"title":"Test","content":"Line 1\\n\\nLine 2"}' | base64
-  npm run practice-blocks:create task-slug -- --type="task_description" --data-base64="eyJ0aXRsZSI6..."
+  lernplattform practice-blocks create task-slug --type="task_description" --data-base64="eyJ0aXRsZSI6..."
 
   # Method 2: Heredoc (recommended for interactive use)
-  npm run practice-blocks:create task-slug -- --type="free_text" --data-stdin <<'EOF'
+  lernplattform practice-blocks create task-slug --type="free_text" --data-stdin <<'EOF'
   {
     "question": "Erklaere das Konzept...",
     "expected_keywords": ["Begriff1", "Begriff2"],
@@ -640,13 +640,13 @@ JSON INPUT METHODS (for complex data with newlines/special chars):
   EOF
 
   # Method 3: Pipe from file
-  cat block-data.json | npm run practice-blocks:create task-slug -- --type="single_choice" --data-stdin
+  cat block-data.json | lernplattform practice-blocks create task-slug --type="single_choice" --data-stdin
 
 OUTPUT:
   All commands return raw JSON from the API.
   Use jq for custom formatting:
-    npm run practice-blocks:list task-slug | jq '.[] | select(.type == "free_text")'
-    npm run practice-blocks:get task-slug id | jq '.data'
+    lernplattform practice-blocks list task-slug | jq '.[] | select(.type == "free_text")'
+    lernplattform practice-blocks get task-slug id | jq '.data'
 `);
 }
 

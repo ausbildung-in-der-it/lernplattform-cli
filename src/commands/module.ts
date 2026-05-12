@@ -4,11 +4,11 @@
  * Direct API implementation without tool dependency.
  *
  * Usage:
- *   npm run module:list [--page=N] [--per-page=N]
- *   npm run module:get <slug>
- *   npm run module:create --title="..." --slug="..." --type="normal" --status="draft"
- *   npm run module:update <slug> -- --title="..."
- *   npm run module:delete <slug> -- --confirm
+ *   lernplattform module list [--page=N] [--per-page=N]
+ *   lernplattform module get <slug>
+ *   lernplattform module create --title="..." --slug="..." --type="normal" --status="draft"
+ *   lernplattform module update <slug> --title="..."
+ *   lernplattform module delete <slug> --confirm
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag } from '../utils/args';
@@ -395,7 +395,7 @@ function printHelp() {
   console.log(`Module CLI - Manage modules
 
 USAGE:
-  npm run module:<operation> [args] [flags]
+  lernplattform module <operation> [args] [flags]
 
 OPERATIONS:
   list                List all modules (paginated)
@@ -408,21 +408,21 @@ EXAMPLES:
 
   List Operations:
     # First page (default: 20 items)
-    npm run module:list
+    lernplattform module list
 
     # Page 2 with 10 items
-    npm run module:list -- --page=2 --per-page=10
+    lernplattform module list --page=2 --per-page=10
 
   Get Operations:
     # Get module with all lessons
-    npm run module:get relationale-datenbanken
+    lernplattform module get relationale-datenbanken
 
     # Get and save to backups/
-    npm run module:get relationale-datenbanken -- --save-to-file
+    lernplattform module get relationale-datenbanken --save-to-file
 
   Create Operations:
     # Create draft module
-    npm run module:create \\
+    lernplattform module create \\
       --title="Neues Modul" \\
       --slug="neues-modul" \\
       --type="normal" \\
@@ -430,7 +430,7 @@ EXAMPLES:
       --description="Modul Beschreibung"
 
     # Create published exam prep module
-    npm run module:create \\
+    lernplattform module create \\
       --title="Pruefungsvorbereitung SQL" \\
       --slug="pruefung-sql" \\
       --type="exam_prep" \\
@@ -439,20 +439,20 @@ EXAMPLES:
 
   Update Operations:
     # Update title only
-    npm run module:update relationale-datenbanken -- --title="Neue Datenbanken"
+    lernplattform module update relationale-datenbanken --title="Neue Datenbanken"
 
     # Update multiple fields
-    npm run module:update test-modul \\
-      -- --title="Updated Title" \\
+    lernplattform module update test-modul \\
+      --title="Updated Title" \\
       --description="Updated description" \\
       --status="published"
 
     # Change position
-    npm run module:update test-modul -- --position=5
+    lernplattform module update test-modul --position=5
 
   Delete Operations:
     # Delete module (requires --confirm for safety)
-    npm run module:delete old-module -- --confirm
+    lernplattform module delete old-module --confirm
 
     WARNING: This will permanently delete the module and all its lessons!
 
@@ -486,8 +486,8 @@ FLAGS:
 OUTPUT:
   All commands return raw JSON from the API.
   Use jq for custom formatting:
-    npm run module:list | jq '.data[] | "\\(.id) \\(.title)"'
-    npm run module:get slug | jq '.lessons | length'
+    lernplattform module list | jq '.data[] | "\\(.id) \\(.title)"'
+    lernplattform module get slug | jq '.lessons | length'
 `);
 }
 

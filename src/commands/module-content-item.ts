@@ -4,13 +4,13 @@
  * Content items link content (lessons, videos, practice tasks) to modules.
  *
  * Usage:
- *   npm run content-items:list <module-slug>
- *   npm run content-items:get <module-slug> <item-id>
- *   npm run content-items:create <module-slug> --content-type="lesson" --content-id=123
- *   npm run content-items:update <module-slug> <item-id> -- --position=5
- *   npm run content-items:delete <module-slug> <item-id> -- --confirm
- *   npm run content-items:bulk <module-slug> --items='[...]'
- *   npm run content-items:reorder <module-slug> 1,2,3,4,5
+ *   lernplattform content-items list <module-slug>
+ *   lernplattform content-items get <module-slug> <item-id>
+ *   lernplattform content-items create <module-slug> --content-type="lesson" --content-id=123
+ *   lernplattform content-items update <module-slug> <item-id> --position=5
+ *   lernplattform content-items delete <module-slug> <item-id> --confirm
+ *   lernplattform content-items bulk <module-slug> --items='[...]'
+ *   lernplattform content-items reorder <module-slug> 1,2,3,4,5
  */
 
 import { parseCliArgs, getRequiredArg, getOptionalFlag, getJsonData } from '../utils/args';
@@ -545,7 +545,7 @@ DESCRIPTION:
   This CLI manages these associations and their ordering.
 
 USAGE:
-  npm run content-items:<operation> <module-slug> [args] [flags]
+  lernplattform content-items <operation> <module-slug> [args] [flags]
 
 OPERATIONS:
   list <module-slug>                    List all content items in a module
@@ -556,50 +556,54 @@ OPERATIONS:
   bulk <module-slug>                    Bulk add content items
   reorder <module-slug> <ids>           Reorder content items (comma-separated IDs)
 
-CONTENT TYPES:
+CONTENT TYPES (content_type_key in der API-Response):
   lesson        - Lesson content
   video         - Video content
   practice_task - Practice task content
+  lab           - Lab content (Hands-on-Uebungen)
+
+  Zum Filtern in jq nach Typ:
+    lernplattform content-items list <modul> | jq '.data[] | select(.content_type_key=="lesson")'
 
 EXAMPLES:
   # List content items in a module
-  npm run content-items:list relationale-datenbanken
+  lernplattform content-items list relationale-datenbanken
 
   # Get specific content item
-  npm run content-items:get relationale-datenbanken 42
+  lernplattform content-items get relationale-datenbanken 42
 
   # Add a lesson to module
-  npm run content-items:create relationale-datenbanken \\
+  lernplattform content-items create relationale-datenbanken \\
     --content-type="lesson" \\
     --content-id=123 \\
     --position=0 \\
     --included-in-primary-flow=true
 
   # Add a video to module
-  npm run content-items:create relationale-datenbanken \\
+  lernplattform content-items create relationale-datenbanken \\
     --content-type="video" \\
     --content-id=456
 
   # Add a practice task
-  npm run content-items:create relationale-datenbanken \\
+  lernplattform content-items create relationale-datenbanken \\
     --content-type="practice_task" \\
     --content-id=789
 
   # Update content item position
-  npm run content-items:update relationale-datenbanken 42 -- --position=5
+  lernplattform content-items update relationale-datenbanken 42 --position=5
 
   # Update included_in_primary_flow
-  npm run content-items:update relationale-datenbanken 42 -- --included-in-primary-flow=false
+  lernplattform content-items update relationale-datenbanken 42 --included-in-primary-flow=false
 
   # Update both position and included_in_primary_flow
-  npm run content-items:update relationale-datenbanken 42 \\
-    -- --position=3 --included-in-primary-flow=true
+  lernplattform content-items update relationale-datenbanken 42 \\
+    --position=3 --included-in-primary-flow=true
 
   # Remove content item from module
-  npm run content-items:delete relationale-datenbanken 42 -- --confirm
+  lernplattform content-items delete relationale-datenbanken 42 --confirm
 
   # Bulk add content items (inline JSON)
-  npm run content-items:bulk relationale-datenbanken \\
+  lernplattform content-items bulk relationale-datenbanken \\
     --items='[
       {"content_type":"lesson","content_id":1,"position":0},
       {"content_type":"video","content_id":2,"position":1},
@@ -607,7 +611,7 @@ EXAMPLES:
     ]'
 
   # Bulk add content items (heredoc - recommended for complex JSON)
-  npm run content-items:bulk my-module -- --items-stdin <<'EOF'
+  lernplattform content-items bulk my-module --items-stdin <<'EOF'
   [
     {"content_type":"lesson","content_id":123,"position":0},
     {"content_type":"video","content_id":456,"position":1},
@@ -616,7 +620,7 @@ EXAMPLES:
   EOF
 
   # Reorder all content items (must include ALL item IDs)
-  npm run content-items:reorder relationale-datenbanken 5,3,1,4,2
+  lernplattform content-items reorder relationale-datenbanken 5,3,1,4,2
 
 FLAGS:
   --content-type="..."           Content type (lesson|video|practice_task)
