@@ -13,6 +13,9 @@ import { randomUUID } from 'node:crypto';
 export const ADMIN_API_PREFIX = '/api/admin/v1';
 export const ADMIN_API_DEFAULT_TIMEOUT_MS = 30_000;
 
+/** Maschinenlesbarer Fehlercode der API (z. B. conflict, paid_amount_unknown), nicht die Texte der Token-Middleware. */
+const MACHINE_CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
+
 export type AdminApiQuery = Record<string, boolean | number | string | undefined>;
 
 export interface AdminApiClientOptions {
@@ -195,7 +198,7 @@ export function describeErrorBody(status: number, body: unknown, statusText = ''
 
   if (typeof record.message === 'string') parts.push(record.message);
 
-  if (typeof record.error === 'string' && record.error !== 'conflict') {
+  if (typeof record.error === 'string' && !MACHINE_CODE_PATTERN.test(record.error)) {
     const hint = AUTH_HINTS[record.error];
     parts.push(hint ? `${record.error} (${hint})` : record.error);
   }
@@ -212,12 +215,16 @@ export function describeErrorBody(status: number, body: unknown, statusText = ''
   return parts.length > 0 ? parts.join('\n') : statusText || `HTTP ${status}`;
 }
 
-/** Fehler-Payload für stderr (JSON), wie im Rest der CLI: {"error": "..."} plus Details. */
+/**
+ * Fehler-Payload für stderr (JSON), wie im Rest der CLI: {"error": "..."} plus Details.
+ * code = Feld `error` der API, wenn es ein Maschinencode ist (409/422/502 der Admin-API).
+ */
 export function adminApiErrorPayload(error: AdminApiError): Record<string, unknown> {
   const payload: Record<string, unknown> = { error: error.message, status: error.status };
   const body = error.body;
   if (body && typeof body === 'object') {
     const record = body as Record<string, unknown>;
+    if (typeof record.error === 'string' && MACHINE_CODE_PATTERN.test(record.error)) payload.code = record.error;
     if (typeof record.current_status === 'string') payload.current_status = record.current_status;
     if (record.errors && typeof record.errors === 'object') payload.errors = record.errors;
   }

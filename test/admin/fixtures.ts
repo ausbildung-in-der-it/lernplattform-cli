@@ -8,7 +8,10 @@ export function cancellationDetail(overrides: Partial<CancellationRequestDetail>
     status: 'pending',
     status_label: 'Ausstehend',
     reason: null,
+    important_reason_accepted: null,
     received_at: '2026-06-10T09:12:00+02:00',
+    withdrawal_refund_due_at: null,
+    withdrawal_recognized_at: null,
     age_days: 105,
     participant: {
       user_id: 5,
@@ -35,6 +38,8 @@ export function cancellationDetail(overrides: Partial<CancellationRequestDetail>
       recalculated: '2026-12-23',
       recalculation_explanation: null,
       recalculation_error: null,
+      recalculated_ends_regularly: false,
+      recalculated_reinterpreted_as_ordinary: false,
     },
     refund: {
       total_price_cents: 58_800,
@@ -50,13 +55,51 @@ export function cancellationDetail(overrides: Partial<CancellationRequestDetail>
       refund_amount_formatted: '265,81 €',
       calculation_explanation: '200 von 365 Tagen genutzt',
       is_paid_amount_estimated: false,
+      is_contract_price_estimated: false,
+      is_withdrawal: false,
       payment_mode: 'one_time',
     },
     refund_error: null,
+    refund_execution: {
+      status: 'none',
+      status_label: 'Nicht erstattet',
+      refunded_cents: 0,
+      refunded_formatted: '0,00 €',
+      outstanding_cents: 26_581,
+      stripe_refund_ids: [],
+      refunded_at: null,
+      error: null,
+    },
+    subscription_cancellation: { status: null, error: null },
     review: { reviewed_at: null, reviewed_by: null, admin_notes: null, rejection_reason: null },
-    warnings: [{ code: 'refund_based_on_catalog_price', message: 'Erstattung basiert auf dem Katalogpreis.' }],
+    warnings: [{ code: 'contract_price_unknown', message: 'Der vereinbarte Vertragspreis ist nicht gespeichert.' }],
     ...overrides,
   };
+}
+
+/** Bestätigte Kündigung mit offener Erstattung. */
+export function confirmedDetail(overrides: Partial<CancellationRequestDetail> = {}): CancellationRequestDetail {
+  return cancellationDetail({
+    status: 'confirmed',
+    status_label: 'Bestätigt',
+    warnings: [],
+    review: {
+      reviewed_at: '2026-09-23T10:00:00+02:00',
+      reviewed_by: { id: 1, name: 'Admin', email: 'admin@example.com' },
+      admin_notes: null,
+      rejection_reason: null,
+    },
+    ...overrides,
+  });
+}
+
+/** Refund-Block mit überschriebenen Feldern (Fixture-Default ist nicht null). */
+export function refundWith(overrides: Partial<NonNullable<CancellationRequestDetail['refund']>>): NonNullable<CancellationRequestDetail['refund']> {
+  return { ...(cancellationDetail().refund as NonNullable<CancellationRequestDetail['refund']>), ...overrides };
+}
+
+export function executionWith(overrides: Partial<CancellationRequestDetail['refund_execution']>): CancellationRequestDetail['refund_execution'] {
+  return { ...cancellationDetail().refund_execution, ...overrides };
 }
 
 export interface RecordedCall {

@@ -59,7 +59,7 @@ BEREICHE (sortiert nach Datenmodell-Hierarchie)
   image-upload              Bilder zu AIDI hochladen (CDN-URLs zurueck)
 
 ADMIN (eigener Admin-Token, siehe lernplattform kuendigungen --help)
-  kuendigungen              Kündigungsanfragen (list|show lesend, confirm|reject verändernd, ohne --force nur Vorschau)
+  kuendigungen              Kündigungsanfragen (list|show lesend; confirm|reject|refund verändernd, refund = echtes Geld; ohne --force nur Vorschau)
 
 DATENMODELL (grob)
   learning-path
@@ -89,7 +89,7 @@ IO-KONVENTIONEN (wichtig fuer Skripte und Agenten)
   stderr    Status-/Debug-Logs ("Listing ...", "Response received in ..s")
   Exit 0    Erfolg
   Exit 1    Fehler. stderr enthaelt JSON: {"error": "..."}
-  Exit 2    nur kuendigungen: API-Fehler (401/403/404/409/422/5xx, nicht erreichbar)
+  Exit 2    nur kuendigungen: API-Fehler (401/403/404/409/422/502/5xx, nicht erreichbar)
   Mit jq    lernplattform <bereich> <aktion> ... 2>/dev/null | jq '...'
             (stderr ausblenden, jq auf stdout)
 

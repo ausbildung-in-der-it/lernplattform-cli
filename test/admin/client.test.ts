@@ -89,7 +89,7 @@ describe('AdminApiClient', () => {
     assert.deepEqual(error.body, body);
     assert.match(error.message, /Die Anfrage hat bereits den Status „Abgelehnt“\.\nAktueller Status: rejected/);
     assert.doesNotMatch(error.message, /conflict/);
-    assert.deepEqual(adminApiErrorPayload(error), { error: error.message, status: 409, current_status: 'rejected' });
+    assert.deepEqual(adminApiErrorPayload(error), { error: error.message, status: 409, code: 'conflict', current_status: 'rejected' });
   });
 
   it('maps 422 including field errors', async () => {
