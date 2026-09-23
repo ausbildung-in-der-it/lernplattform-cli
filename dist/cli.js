@@ -5877,6 +5877,7 @@ var WARNING = {
   importantReasonDecisionRequired: "important_reason_decision_required",
   bundleSubscription: "bundle_subscription",
   bundleSubscriptionAmbiguous: "bundle_subscription_ambiguous",
+  companyMultiSeatSubscription: "company_multi_seat_subscription",
   refundOutstanding: "refund_outstanding",
   subscriptionCancellationFailed: "subscription_cancellation_failed",
   refundFailed: "refund_failed",
@@ -5889,8 +5890,10 @@ var CRITICAL_WARNINGS = [
   WARNING.subscriptionNotFound,
   WARNING.refundFailed,
   WARNING.paidAmountUnknown,
-  WARNING.bundleSubscriptionAmbiguous
+  WARNING.bundleSubscriptionAmbiguous,
+  WARNING.companyMultiSeatSubscription
 ];
+var COMPANY_MULTI_SEAT_TEXT = "Firmen-Abo mit mehreren Lizenzen, Teilk\xFCndigung ist noch nicht automatisiert (AIDI-776). In Stripe die Menge zum Wirksamkeitsdatum manuell reduzieren und den Zugang nur dieser Lizenz beenden.";
 var LEDGER_MISSING_TEXT = "Best\xE4tigen gesperrt, Zahlungsbuch fehlt (Backfill)";
 var BASE_PATH = "/cancellation-requests";
 async function listCancellationRequests(client, options = {}) {
@@ -5968,6 +5971,7 @@ var SHORT_WARNING_LABELS = {
   [WARNING.importantReasonDecisionRequired]: "wichtiger-grund-offen",
   [WARNING.bundleSubscription]: "abo-buendel",
   [WARNING.bundleSubscriptionAmbiguous]: "ABO-BUENDEL-UNKLAR",
+  [WARNING.companyMultiSeatSubscription]: "FIRMA-MEHRLIZENZ",
   [WARNING.refundOutstanding]: "erstattung-offen",
   [WARNING.subscriptionCancellationFailed]: "ABO-KUENDIGUNG-FEHLGESCHLAGEN",
   [WARNING.refundFailed]: "ERSTATTUNG-FEHLGESCHLAGEN",
@@ -6223,6 +6227,18 @@ function buildConfirmationPreview(detail, options = {}) {
           text: `${label}: Der Pass ist gel\xF6scht, Wirksamkeitsdatum und Erstattung lassen sich nicht berechnen. Ein Aufruf mit --force wird mit 409 user_pass_missing abgelehnt. Pass wiederherstellen oder als unzul\xE4ssig ablehnen (reject --unzulaessig=falscher-vertrag).`
         },
         ...warningLines(detail.warnings, [WARNING.userPassMissing])
+      ]
+    };
+  }
+  if (hasWarning(detail.warnings, WARNING.companyMultiSeatSubscription)) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `Best\xE4tigen gesperrt: ${COMPANY_MULTI_SEAT_TEXT} Ein Aufruf mit --force wird mit 409 company_multi_seat_subscription abgelehnt.`
+        },
+        ...warningLines(detail.warnings, [WARNING.companyMultiSeatSubscription])
       ]
     };
   }
@@ -6554,6 +6570,7 @@ var ERROR_CODE_HINTS = {
   conflict: "Die Anfrage ist schon anders bearbeitet. Status mit show <id> pr\xFCfen.",
   unprocessable: "Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht au\xDFerordentlicher K\xFCndigung, --als-widerruf au\xDFerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer K\xFCndigung oder einem fristgerechten Widerruf, oder keine Erstattung berechenbar.",
   bundle_subscription_ambiguous: "Das Stripe-Abo bezahlt auch P\xE4sse aus einem anderen Kauf. Erst in Stripe kl\xE4ren, welcher Vertrag endet, dann erneut best\xE4tigen.",
+  company_multi_seat_subscription: COMPANY_MULTI_SEAT_TEXT,
   paid_amount_unknown: `${LEDGER_MISSING_TEXT}: auf dem Server php artisan pass:backfill-payments, dann erneut.`,
   not_confirmed: "Erst best\xE4tigen (confirm <id>), dann erstatten.",
   refund_in_progress: "Es l\xE4uft bereits eine Erstattung. Nach 10 Minuten erneut versuchen und vorher mit show <id> den Stand pr\xFCfen.",
@@ -6776,6 +6793,9 @@ function blockerBanner(detail, c) {
   const banners = [];
   if (hasWarning(detail.warnings, WARNING.paidAmountUnknown)) {
     banners.push(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`);
+  }
+  if (hasWarning(detail.warnings, WARNING.companyMultiSeatSubscription)) {
+    banners.push(`! Best\xE4tigen gesperrt: ${COMPANY_MULTI_SEAT_TEXT}`);
   }
   if (hasWarning(detail.warnings, WARNING.bundleSubscriptionAmbiguous)) {
     banners.push("! Best\xE4tigen gesperrt: Das Stripe-Abo bezahlt auch P\xE4sse aus einem anderen Kauf. Erst in Stripe kl\xE4ren.");
@@ -7193,7 +7213,9 @@ WAS DIE BEFEHLE MIT --force AUSL\xD6SEN
                      das Datum erreicht ist), Best\xE4tigungsmail an den echten Teilnehmer. KEINE Erstattung.
                      B\xFCndel-Abo (mehrere P\xE4sse, ein Kauf) = ein Vertrag: der Zugang ALLER P\xE4sse des B\xFCndels
                      endet zum selben Zeitpunkt (subscription_cancellation.bundle_user_pass_ids).
-                     Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous, user_pass_missing.
+                     Firmen-Abo mit mehreren Lizenzen: kein B\xFCndel, Lizenzen werden einzeln gek\xFCndigt.
+                     Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous,
+                     company_multi_seat_subscription, user_pass_missing.
   reject --force   \u2192 Status "rejected" mit rejection_ground, Ablehnungsmail mit --grund an den Teilnehmer.
   refund --force   \u2192 Stripe-Refund(s) \xFCber die Zahlungen des Vertrags, neueste zuerst, auf das beim Kauf
                      genutzte Zahlungsmittel. Echtes Geld, nicht umkehrbar. Nur f\xFCr best\xE4tigte Anfragen
@@ -7208,6 +7230,7 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
   confirm   200 confirmed | already_confirmed
             409 conflict (anderer Status) | paid_amount_unknown (Zahlungsbuch fehlt, Backfill n\xF6tig)
                 | bundle_subscription_ambiguous (Abo bezahlt P\xE4sse eines anderen Kaufs)
+                | company_multi_seat_subscription (Firmen-Abo mit mehreren Lizenzen, AIDI-776)
                 | user_pass_missing (Pass gel\xF6scht)
             422 unprocessable (Flag passt nicht zur Anfrage, z. B. Widerruf bei Firmenpass)
   reject    200 rejected | already_rejected       409 conflict
@@ -7223,6 +7246,9 @@ WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; 
                            php artisan pass:backfill-payments). Erstatten ebenso
   ABO-BUENDEL-UNKLAR       bundle_subscription_ambiguous: Abo bezahlt P\xE4sse eines anderen Kaufs,
                            Best\xE4tigen gesperrt, erst in Stripe kl\xE4ren
+  FIRMA-MEHRLIZENZ         company_multi_seat_subscription: Firmen-Abo mit mehreren Lizenzen, Best\xE4tigen
+                           gesperrt bis AIDI-776. In Stripe die Menge zum Wirksamkeitsdatum reduzieren
+                           und den Zugang nur dieser Lizenz beenden
   erstattung-offen         refund_outstanding: best\xE4tigt, Erstattung noch offen (oder Rest nach neuer Rate).
                            Bei Abos erst nach der letzten Rate vor dem Wirksamkeitsdatum erstatten
   ERSTATTUNG-FEHLGESCHLAGEN refund_failed: letzter refund-Versuch von Stripe abgelehnt

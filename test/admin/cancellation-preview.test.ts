@@ -2,6 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  CRITICAL_WARNINGS,
+  ERROR_CODE_HINTS,
+  shortWarningLabel,
   buildActionResultLines,
   buildConfirmationPreview,
   buildRefundPreview,
@@ -403,6 +406,22 @@ describe('review fixes (AIDI-749)', () => {
 
     assert.equal(preview.changesState, false);
     assert.match(texts(preview.lines)[0], /Bestätigen gesperrt.*\(#2001\).*409 bundle_subscription_ambiguous/);
+  });
+
+  it('confirm preview blocks a company subscription with several seats (server: 409 company_multi_seat_subscription)', () => {
+    const detail = cancellationDetail({
+      subscription: bundleSubscription,
+      subscription_cancellation: { status: null, error: null, bundle_user_pass_ids: [], bundle_ambiguous: false },
+      warnings: [{ code: 'company_multi_seat_subscription', message: '…' }],
+    });
+
+    const preview = buildConfirmationPreview(detail, { today: TODAY });
+
+    assert.equal(preview.changesState, false);
+    assert.match(texts(preview.lines)[0], /Bestätigen gesperrt: Firmen-Abo mit mehreren Lizenzen.*AIDI-776.*409 company_multi_seat_subscription/);
+    assert.equal(shortWarningLabel('company_multi_seat_subscription'), 'FIRMA-MEHRLIZENZ');
+    assert.ok(CRITICAL_WARNINGS.includes('company_multi_seat_subscription'));
+    assert.match(ERROR_CODE_HINTS.company_multi_seat_subscription, /Menge zum Wirksamkeitsdatum manuell reduzieren/);
   });
 
   it('confirm preview refuses --als-widerruf for a company pass (server: 422)', () => {

@@ -67,6 +67,7 @@ export const WARNING = {
   importantReasonDecisionRequired: 'important_reason_decision_required',
   bundleSubscription: 'bundle_subscription',
   bundleSubscriptionAmbiguous: 'bundle_subscription_ambiguous',
+  companyMultiSeatSubscription: 'company_multi_seat_subscription',
   refundOutstanding: 'refund_outstanding',
   subscriptionCancellationFailed: 'subscription_cancellation_failed',
   refundFailed: 'refund_failed',
@@ -84,7 +85,12 @@ export const CRITICAL_WARNINGS: readonly string[] = [
   WARNING.refundFailed,
   WARNING.paidAmountUnknown,
   WARNING.bundleSubscriptionAmbiguous,
+  WARNING.companyMultiSeatSubscription,
 ];
+
+/** Übergangssperre bis AIDI-776: Firmen kündigen Lizenzen einzeln, das ist noch nicht automatisiert. */
+export const COMPANY_MULTI_SEAT_TEXT =
+  'Firmen-Abo mit mehreren Lizenzen, Teilkündigung ist noch nicht automatisiert (AIDI-776). In Stripe die Menge zum Wirksamkeitsdatum manuell reduzieren und den Zugang nur dieser Lizenz beenden.';
 
 /** Text für paid_amount_unknown in show, Liste und Vorschau. */
 export const LEDGER_MISSING_TEXT = 'Bestätigen gesperrt, Zahlungsbuch fehlt (Backfill)';
@@ -372,6 +378,7 @@ export const SHORT_WARNING_LABELS: Record<string, string> = {
   [WARNING.importantReasonDecisionRequired]: 'wichtiger-grund-offen',
   [WARNING.bundleSubscription]: 'abo-buendel',
   [WARNING.bundleSubscriptionAmbiguous]: 'ABO-BUENDEL-UNKLAR',
+  [WARNING.companyMultiSeatSubscription]: 'FIRMA-MEHRLIZENZ',
   [WARNING.refundOutstanding]: 'erstattung-offen',
   [WARNING.subscriptionCancellationFailed]: 'ABO-KUENDIGUNG-FEHLGESCHLAGEN',
   [WARNING.refundFailed]: 'ERSTATTUNG-FEHLGESCHLAGEN',
@@ -738,6 +745,19 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
           text: `${label}: Der Pass ist gelöscht, Wirksamkeitsdatum und Erstattung lassen sich nicht berechnen. Ein Aufruf mit --force wird mit 409 user_pass_missing abgelehnt. Pass wiederherstellen oder als unzulässig ablehnen (reject --unzulaessig=falscher-vertrag).`,
         },
         ...warningLines(detail.warnings, [WARNING.userPassMissing]),
+      ],
+    };
+  }
+
+  if (hasWarning(detail.warnings, WARNING.companyMultiSeatSubscription)) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: 'blocked',
+          text: `Bestätigen gesperrt: ${COMPANY_MULTI_SEAT_TEXT} Ein Aufruf mit --force wird mit 409 company_multi_seat_subscription abgelehnt.`,
+        },
+        ...warningLines(detail.warnings, [WARNING.companyMultiSeatSubscription]),
       ],
     };
   }
@@ -1145,6 +1165,7 @@ export const ERROR_CODE_HINTS: Record<string, string> = {
     'Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht außerordentlicher Kündigung, --als-widerruf außerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer Kündigung oder einem fristgerechten Widerruf, oder keine Erstattung berechenbar.',
   bundle_subscription_ambiguous:
     'Das Stripe-Abo bezahlt auch Pässe aus einem anderen Kauf. Erst in Stripe klären, welcher Vertrag endet, dann erneut bestätigen.',
+  company_multi_seat_subscription: COMPANY_MULTI_SEAT_TEXT,
   paid_amount_unknown: `${LEDGER_MISSING_TEXT}: auf dem Server php artisan pass:backfill-payments, dann erneut.`,
   not_confirmed: 'Erst bestätigen (confirm <id>), dann erstatten.',
   refund_in_progress: 'Es läuft bereits eine Erstattung. Nach 10 Minuten erneut versuchen und vorher mit show <id> den Stand prüfen.',

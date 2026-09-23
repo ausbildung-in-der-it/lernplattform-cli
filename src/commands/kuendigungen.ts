@@ -439,7 +439,9 @@ WAS DIE BEFEHLE MIT --force AUSLÖSEN
                      das Datum erreicht ist), Bestätigungsmail an den echten Teilnehmer. KEINE Erstattung.
                      Bündel-Abo (mehrere Pässe, ein Kauf) = ein Vertrag: der Zugang ALLER Pässe des Bündels
                      endet zum selben Zeitpunkt (subscription_cancellation.bundle_user_pass_ids).
-                     Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous, user_pass_missing.
+                     Firmen-Abo mit mehreren Lizenzen: kein Bündel, Lizenzen werden einzeln gekündigt.
+                     Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous,
+                     company_multi_seat_subscription, user_pass_missing.
   reject --force   → Status "rejected" mit rejection_ground, Ablehnungsmail mit --grund an den Teilnehmer.
   refund --force   → Stripe-Refund(s) über die Zahlungen des Vertrags, neueste zuerst, auf das beim Kauf
                      genutzte Zahlungsmittel. Echtes Geld, nicht umkehrbar. Nur für bestätigte Anfragen
@@ -454,6 +456,7 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
   confirm   200 confirmed | already_confirmed
             409 conflict (anderer Status) | paid_amount_unknown (Zahlungsbuch fehlt, Backfill nötig)
                 | bundle_subscription_ambiguous (Abo bezahlt Pässe eines anderen Kaufs)
+                | company_multi_seat_subscription (Firmen-Abo mit mehreren Lizenzen, AIDI-776)
                 | user_pass_missing (Pass gelöscht)
             422 unprocessable (Flag passt nicht zur Anfrage, z. B. Widerruf bei Firmenpass)
   reject    200 rejected | already_rejected       409 conflict
@@ -469,6 +472,9 @@ WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; 
                            php artisan pass:backfill-payments). Erstatten ebenso
   ABO-BUENDEL-UNKLAR       bundle_subscription_ambiguous: Abo bezahlt Pässe eines anderen Kaufs,
                            Bestätigen gesperrt, erst in Stripe klären
+  FIRMA-MEHRLIZENZ         company_multi_seat_subscription: Firmen-Abo mit mehreren Lizenzen, Bestätigen
+                           gesperrt bis AIDI-776. In Stripe die Menge zum Wirksamkeitsdatum reduzieren
+                           und den Zugang nur dieser Lizenz beenden
   erstattung-offen         refund_outstanding: bestätigt, Erstattung noch offen (oder Rest nach neuer Rate).
                            Bei Abos erst nach der letzten Rate vor dem Wirksamkeitsdatum erstatten
   ERSTATTUNG-FEHLGESCHLAGEN refund_failed: letzter refund-Versuch von Stripe abgelehnt

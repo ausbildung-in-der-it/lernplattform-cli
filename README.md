@@ -186,11 +186,15 @@ Die Plattform rechnet, die CLI zeigt das Ergebnis und die Begründung (`show`, A
 
 Hat ein Pass keine Einträge im Zahlungsbuch, ist der gezahlte Betrag unbekannt. Dann gilt **„Bestätigen gesperrt, Zahlungsbuch fehlt (Backfill)“** (Warnung `ZAHLUNGSBUCH-FEHLT`, Code `paid_amount_unknown`). `confirm --force` und `refund --force` antworten mit 409. Zuerst müssen auf dem Server die Zahlungen nachgeladen werden (`php artisan pass:backfill-payments`, eigene Ansage), danach neu prüfen.
 
+### Gesperrt: Firmen-Abo mit mehreren Lizenzen
+
+Kündigt eine Firma eine Lizenz aus einem Stripe-Abo mit weiteren aktiven Firmenlizenzen, gilt **„Bestätigen gesperrt“** (Warnung `FIRMA-MEHRLIZENZ`, Code `company_multi_seat_subscription`, `confirm --force` antwortet mit 409). Firmen kündigen Lizenzen einzeln, das ist noch nicht automatisiert (AIDI-776). Bis dahin in Stripe die Menge zum Wirksamkeitsdatum reduzieren und den Zugang nur dieser Lizenz beenden.
+
 ### Ergebnis- und Fehlercodes
 
 | Befehl | Erfolg (Exit 0) | Fehler (Exit 2, `code` im stderr-JSON) |
 |---|---|---|
-| `confirm` | `confirmed`, `already_confirmed` | 409 `conflict`, 409 `paid_amount_unknown`, 422 `unprocessable` |
+| `confirm` | `confirmed`, `already_confirmed` | 409 `conflict`, `paid_amount_unknown`, `bundle_subscription_ambiguous`, `company_multi_seat_subscription`, `user_pass_missing`; 422 `unprocessable` |
 | `reject` | `rejected`, `already_rejected` | 409 `conflict` |
 | `refund` | `refunded`, `already_refunded`, `nothing_to_refund` | 409 `not_confirmed`, `paid_amount_unknown`, `refund_in_progress`, `user_pass_missing`; 422 `unprocessable`; 502 `refund_failed` |
 

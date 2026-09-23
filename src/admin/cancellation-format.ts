@@ -4,6 +4,7 @@
  */
 
 import {
+  COMPANY_MULTI_SEAT_TEXT,
   CRITICAL_WARNINGS,
   DASH,
   LEDGER_MISSING_TEXT,
@@ -305,6 +306,9 @@ function blockerBanner(detail: CancellationRequestDetail, c: Palette): string | 
   const banners: string[] = [];
   if (hasWarning(detail.warnings, WARNING.paidAmountUnknown)) {
     banners.push(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`);
+  }
+  if (hasWarning(detail.warnings, WARNING.companyMultiSeatSubscription)) {
+    banners.push(`! Bestätigen gesperrt: ${COMPANY_MULTI_SEAT_TEXT}`);
   }
   if (hasWarning(detail.warnings, WARNING.bundleSubscriptionAmbiguous)) {
     banners.push('! Bestätigen gesperrt: Das Stripe-Abo bezahlt auch Pässe aus einem anderen Kauf. Erst in Stripe klären.');
