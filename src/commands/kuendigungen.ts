@@ -16,6 +16,7 @@ import { AdminApiClient, AdminApiError, adminApiErrorPayload } from '../admin/cl
 import {
   AdminUsageError,
   describeTarget,
+  isEnvironmentExplicit,
   requireExplicitEnvironment,
   resolveAdminApiTarget,
   type AdminApiTarget,
@@ -335,8 +336,10 @@ export async function executeKuendigungen(argv: string[], io: CommandIo): Promis
 
   try {
     assertKnownFlags(operation, args);
+    if (WRITE_OPERATIONS.includes(operation)) {
+      requireExplicitEnvironment({ environmentExplicit: isEnvironmentExplicit(args.flags.env, io.env) }, operation);
+    }
     const target = resolveAdminApiTarget(args.flags.env, io.env);
-    if (WRITE_OPERATIONS.includes(operation)) requireExplicitEnvironment(target, operation);
     io.err(`Ziel: ${describeTarget(target)}`);
 
     const client = new AdminApiClient({

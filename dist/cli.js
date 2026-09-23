@@ -5797,9 +5797,8 @@ function parseEnvironment(value) {
   );
 }
 function resolveAdminApiTarget(envFlag, env = process.env) {
-  const requested = envFlag ?? env[ENVIRONMENT_VARIABLE];
-  const environment = parseEnvironment(requested);
-  const environmentExplicit = requested !== void 0 && requested !== null && String(requested).trim() !== "";
+  const environment = parseEnvironment(envFlag ?? env[ENVIRONMENT_VARIABLE]);
+  const environmentExplicit = isEnvironmentExplicit(envFlag, env);
   const overrideUrl = env[BASE_URL_VARIABLE]?.trim();
   const baseUrl = (overrideUrl || DEFAULT_BASE_URLS[environment]).replace(/\/+$/, "");
   const tokenVariable = TOKEN_VARIABLES[environment];
@@ -5824,6 +5823,10 @@ function resolveAdminApiTarget(envFlag, env = process.env) {
     basicAuth,
     basicAuthVariable
   };
+}
+function isEnvironmentExplicit(envFlag, env = process.env) {
+  const requested = envFlag ?? env[ENVIRONMENT_VARIABLE];
+  return requested !== void 0 && requested !== null && requested !== true && String(requested).trim() !== "";
 }
 function requireExplicitEnvironment(target, operation) {
   if (target.environmentExplicit) return;
@@ -7089,8 +7092,10 @@ async function executeKuendigungen(argv, io) {
   }
   try {
     assertKnownFlags(operation, args);
+    if (WRITE_OPERATIONS.includes(operation)) {
+      requireExplicitEnvironment({ environmentExplicit: isEnvironmentExplicit(args.flags.env, io.env) }, operation);
+    }
     const target = resolveAdminApiTarget(args.flags.env, io.env);
-    if (WRITE_OPERATIONS.includes(operation)) requireExplicitEnvironment(target, operation);
     io.err(`Ziel: ${describeTarget(target)}`);
     const client = new AdminApiClient({
       baseUrl: target.baseUrl,

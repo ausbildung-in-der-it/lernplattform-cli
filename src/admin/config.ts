@@ -80,9 +80,8 @@ export function resolveAdminApiTarget(
   envFlag: unknown,
   env: NodeJS.ProcessEnv = process.env
 ): AdminApiTarget {
-  const requested = envFlag ?? env[ENVIRONMENT_VARIABLE];
-  const environment = parseEnvironment(requested);
-  const environmentExplicit = requested !== undefined && requested !== null && String(requested).trim() !== '';
+  const environment = parseEnvironment(envFlag ?? env[ENVIRONMENT_VARIABLE]);
+  const environmentExplicit = isEnvironmentExplicit(envFlag, env);
   const overrideUrl = env[BASE_URL_VARIABLE]?.trim();
   const baseUrl = (overrideUrl || DEFAULT_BASE_URLS[environment]).replace(/\/+$/, '');
 
@@ -113,6 +112,12 @@ export function resolveAdminApiTarget(
     basicAuth,
     basicAuthVariable,
   };
+}
+
+/** Ob --env oder $LERNPLATTFORM_ENV eine Umgebung nennt (sonst stiller Default production). */
+export function isEnvironmentExplicit(envFlag: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
+  const requested = envFlag ?? env[ENVIRONMENT_VARIABLE];
+  return requested !== undefined && requested !== null && requested !== true && String(requested).trim() !== '';
 }
 
 /**

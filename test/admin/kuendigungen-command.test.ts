@@ -160,6 +160,12 @@ describe('lernplattform kuendigungen', () => {
       assert.equal(result.exitCode, EXIT_USAGE, argv.join(' '));
       assert.match(String(lastStderrJson(result.stderr).error), /braucht ein ausdrückliches Ziel: --env=production oder --env=staging/);
     }
+    // Auch ohne jeden Token kommt zuerst der Hinweis auf --env, nicht der fehlende production-Token.
+    for (const argv of [['confirm', '12']]) {
+      const result = await execute(argv, {});
+      assert.equal(result.exitCode, EXIT_USAGE, argv.join(' '));
+      assert.match(String(lastStderrJson(result.stderr).error), /braucht ein ausdrückliches Ziel: --env=production oder --env=staging/);
+    }
     assert.equal(calls.length, 0);
 
     const explicit = await execute(['confirm', '12', '--env=production'], withoutEnv);
