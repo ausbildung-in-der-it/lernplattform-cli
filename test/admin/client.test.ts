@@ -138,3 +138,88 @@ describe('AdminApiClient', () => {
     assert.match(error.message, /Zeitüberschreitung/);
   });
 });
+
+const NGINX_401_HTML = `<html>
+<head><title>401 Authorization Required</title></head>
+<body>
+<center><h1>401 Authorization Required</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>`;
+
+function nginxChallenge() {
+  return {
+    status: 401,
+    body: NGINX_401_HTML,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'WWW-Authenticate': 'Basic realm="Restricted Area"' },
+  };
+}
+
+describe('AdminApiClient hinter nginx-Basic-Auth', () => {
+  afterEach(restoreFetch);
+
+  const basicClient = new AdminApiClient({
+    baseUrl: 'https://staging.example.test',
+    token: 'secret-token',
+    basicAuth: 'stage-user:pa:ss',
+    basicAuthVariable: 'LERNPLATTFORM_STAGING_BASIC_AUTH',
+  });
+
+  it('sends Basic credentials in Authorization and the bearer token in X-API-Authorization', async () => {
+    const calls = stubFetch(() => ({ status: 200, body: { data: [] } }));
+
+    await basicClient.get('/cancellation-requests');
+    await basicClient.post('/cancellation-requests/12/confirmation', {});
+
+    for (const call of calls) {
+      assert.equal(call.headers.Authorization, `Basic ${Buffer.from('stage-user:pa:ss').toString('base64')}`);
+      assert.equal(call.headers['X-API-Authorization'], 'Bearer secret-token');
+    }
+  });
+
+  it('sends only the bearer token in Authorization without Basic-Auth', async () => {
+    const calls = stubFetch(() => ({ status: 200, body: {} }));
+
+    await new AdminApiClient({ baseUrl: 'https://x.test', token: 'secret-token', basicAuth: '' }).get('/x');
+
+    assert.equal(calls[0].headers.Authorization, 'Bearer secret-token');
+    assert.equal('X-API-Authorization' in calls[0].headers, false);
+  });
+
+  it('reports a missing Basic-Auth with the variable name when nginx answers 401', async () => {
+    stubFetch(nginxChallenge);
+
+    const error = await expectApiError(new AdminApiClient({ baseUrl: 'https://staging.example.test', token: 't' }).get('/x'));
+
+    assert.equal(error.status, 401);
+    assert.match(error.message, /Basic-Auth erforderlich \(nginx\)\. LERNPLATTFORM_STAGING_BASIC_AUTH=user:passwort setzen/);
+    assert.doesNotMatch(error.message, /<html>/);
+  });
+
+  it('reports rejected Basic-Auth credentials without echoing them', async () => {
+    stubFetch(nginxChallenge);
+
+    const error = await expectApiError(basicClient.get('/x'));
+
+    assert.equal(error.status, 401);
+    assert.match(error.message, /Basic-Auth abgelehnt \(nginx\)\. Zugangsdaten in LERNPLATTFORM_STAGING_BASIC_AUTH prüfen/);
+    assert.doesNotMatch(error.message, /stage-user|pa:ss|secret-token/);
+  });
+
+  it('recognizes the nginx page by its body even without WWW-Authenticate', async () => {
+    stubFetch(() => ({ status: 401, body: NGINX_401_HTML, headers: { 'Content-Type': 'text/html' } }));
+
+    const error = await expectApiError(basicClient.get('/x'));
+
+    assert.match(error.message, /Basic-Auth abgelehnt/);
+  });
+
+  it('keeps the token hint for a JSON 401 from the API behind Basic-Auth', async () => {
+    stubFetch(() => ({ status: 401, body: { error: 'Invalid token' } }));
+
+    const error = await expectApiError(basicClient.get('/x'));
+
+    assert.match(error.message, /Invalid token \(Token unbekannt/);
+    assert.doesNotMatch(error.message, /Basic-Auth/);
+  });
+});

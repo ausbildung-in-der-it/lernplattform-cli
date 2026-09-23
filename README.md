@@ -181,6 +181,7 @@ Der Admin-Token ist bewusst getrennt vom Content-Token (`AIDI_API_TOKEN`, `AIDI_
 | `LERNPLATTFORM_STAGING_ADMIN_TOKEN` | Token für staging (Pflicht für `--env=staging`) |
 | `LERNPLATTFORM_ENV` | Default für `--env` (`production` oder `staging`) |
 | `LERNPLATTFORM_BASE_URL` | Übersteuert die URL, etwa für eine lokale Instanz. Der Token kommt weiter aus der Variable der gewählten Umgebung |
+| `LERNPLATTFORM_STAGING_BASIC_AUTH` | `user:passwort` für die nginx-Basic-Auth vor staging (Pflicht für `--env=staging`, siehe unten) |
 
 Defaults: production `https://app.ausbildung-in-der-it.de`, staging `https://staging.ausbildung-in-der-it.de`. Jeder Aufruf schreibt das Ziel auf stderr (`Ziel: <url> (<umgebung>)`), die Vorschau zusätzlich auf stdout.
 
@@ -188,6 +189,19 @@ Defaults: production `https://app.ausbildung-in-der-it.de`, staging `https://sta
 lernplattform kuendigungen list --env=staging
 LERNPLATTFORM_BASE_URL=http://127.0.0.1:8000 lernplattform kuendigungen list   # lokale Plattform, Token aus LERNPLATTFORM_ADMIN_TOKEN
 ```
+
+### Staging (Basic-Auth)
+
+`https://staging.ausbildung-in-der-it.de` ist komplett per nginx-Basic-Auth geschützt. Die Zugangsdaten stehen im Repo `aidi-handbook` unter `docs/tools/plattform-staging.md` (Abschnitt oben, dort auch der Verweis auf den 1Password-Eintrag „Plattform Staging Basic Auth“). Eintragen in `~/.config/lernplattform/.env`, nie ins Repo:
+
+```bash
+LERNPLATTFORM_STAGING_ADMIN_TOKEN=...
+LERNPLATTFORM_STAGING_BASIC_AUTH=user:passwort
+```
+
+Ist die Variable gesetzt, schickt die CLI `Authorization: Basic …` für nginx und den Admin-Token als `X-API-Authorization: Bearer …`. Die Plattform-Middleware `SystemApiAuth` liest `X-API-Authorization` vor `Authorization`, deshalb kommen sich beide Header nicht in die Quere. Ohne die Variable bleibt alles wie bisher (`Authorization: Bearer …`), production braucht keine Basic-Auth.
+
+Die Ziel-Zeile zeigt `(staging, mit Basic-Auth)`. Fehlt die Basic-Auth oder ist sie falsch, antwortet nginx mit einer HTML-Seite „401 Authorization Required“; die CLI meldet dann `Basic-Auth erforderlich (nginx)` bzw. `Basic-Auth abgelehnt (nginx)` samt Variablennamen. Ein 401 der API selbst (JSON) behält die Token-Hinweise. Die Zugangsdaten erscheinen in keiner Ausgabe.
 
 ### Ausgabe und Exit-Codes
 

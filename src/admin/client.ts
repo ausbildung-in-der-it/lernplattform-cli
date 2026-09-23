@@ -1,6 +1,11 @@
 /**
  * Generischer Client für die Admin-API der Plattform (Bearer-Token, JSON).
  * Wird von allen Admin-Bereichen genutzt (heute Kündigungen, später weitere).
+ *
+ * Hinter nginx-Basic-Auth (staging) ist der Authorization-Header durch
+ * `Basic …` belegt. Der Token wandert dann nach X-API-Authorization; die
+ * Plattform-Middleware SystemApiAuth liest diesen Header vor Authorization
+ * und erwartet dort ebenfalls das Präfix `Bearer `.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -17,6 +22,10 @@ export interface AdminApiClientOptions {
   /** Pfad-Präfix der API, Default /api/admin/v1 */
   apiPrefix?: string;
   timeoutMs?: number;
+  /** user:passwort für nginx-Basic-Auth vor der Plattform (staging) */
+  basicAuth?: string;
+  /** Name der ENV-Variable für basicAuth, nur für Fehlermeldungen */
+  basicAuthVariable?: string;
 }
 
 export interface AdminApiPostOptions {
@@ -44,12 +53,16 @@ export class AdminApiClient {
   readonly apiBaseUrl: string;
   private readonly token: string;
   private readonly timeoutMs: number;
+  private readonly basicAuth: string | undefined;
+  private readonly basicAuthVariable: string;
 
   constructor(options: AdminApiClientOptions) {
     const host = options.baseUrl.replace(/\/+$/, '');
     this.apiBaseUrl = `${host}${options.apiPrefix ?? ADMIN_API_PREFIX}`;
     this.token = options.token;
     this.timeoutMs = options.timeoutMs ?? ADMIN_API_DEFAULT_TIMEOUT_MS;
+    this.basicAuth = options.basicAuth || undefined;
+    this.basicAuthVariable = options.basicAuthVariable ?? 'LERNPLATTFORM_STAGING_BASIC_AUTH';
   }
 
   async get<T>(path: string, query: AdminApiQuery = {}): Promise<T> {
@@ -88,7 +101,7 @@ export class AdminApiClient {
       response = await fetch(url, {
         method,
         body,
-        headers: { ...headers, Authorization: `Bearer ${this.token}` },
+        headers: { ...headers, ...this.authHeaders() },
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
@@ -96,12 +109,45 @@ export class AdminApiClient {
     }
 
     const payload = await readBody(response);
+    if (isBasicAuthChallenge(response, payload)) {
+      throw new AdminApiError(this.basicAuthHint(), response.status, payload);
+    }
+
     if (!response.ok) {
       throw new AdminApiError(describeErrorBody(response.status, payload, response.statusText), response.status, payload);
     }
 
     return payload as T;
   }
+
+  private authHeaders(): Record<string, string> {
+    const bearer = `Bearer ${this.token}`;
+    if (!this.basicAuth) {
+      return { Authorization: bearer };
+    }
+
+    return {
+      Authorization: `Basic ${Buffer.from(this.basicAuth, 'utf8').toString('base64')}`,
+      'X-API-Authorization': bearer,
+    };
+  }
+
+  private basicAuthHint(): string {
+    return this.basicAuth
+      ? `Basic-Auth abgelehnt (nginx). Zugangsdaten in ${this.basicAuthVariable} prüfen (Format user:passwort).`
+      : `Basic-Auth erforderlich (nginx). ${this.basicAuthVariable}=user:passwort setzen.`;
+  }
+}
+
+/**
+ * 401 vom Webserver vor der Plattform statt von der API: nginx antwortet mit
+ * `WWW-Authenticate: Basic …` und einer HTML-Seite, die API immer mit JSON.
+ */
+function isBasicAuthChallenge(response: Response, payload: unknown): boolean {
+  if (response.status !== 401 || (payload !== undefined && typeof payload !== 'string')) return false;
+
+  const challenge = response.headers.get('www-authenticate') ?? '';
+  return /^basic\b/i.test(challenge) || (typeof payload === 'string' && payload.includes('401 Authorization Required'));
 }
 
 async function readBody(response: Response): Promise<unknown> {

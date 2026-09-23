@@ -240,7 +240,12 @@ export async function executeKuendigungen(argv: string[], io: CommandIo): Promis
     const target = resolveAdminApiTarget(args.flags.env, io.env);
     io.err(`Ziel: ${describeTarget(target)}`);
 
-    const client = new AdminApiClient({ baseUrl: target.baseUrl, token: target.token });
+    const client = new AdminApiClient({
+      baseUrl: target.baseUrl,
+      token: target.token,
+      basicAuth: target.basicAuth,
+      basicAuthVariable: target.basicAuthVariable,
+    });
     await handler(client, args, io, target);
     return EXIT_OK;
   } catch (error) {
@@ -316,6 +321,8 @@ UMGEBUNG UND TOKEN (getrennt vom Content-Token AIDI_API_TOKEN)
   LERNPLATTFORM_STAGING_ADMIN_TOKEN  Admin-Token für staging   (Pflicht für --env=staging)
   LERNPLATTFORM_ENV                  Default für --env
   LERNPLATTFORM_BASE_URL             Übersteuert die URL (z. B. lokale Instanz), Token nach --env
+  LERNPLATTFORM_STAGING_BASIC_AUTH   user:passwort für die nginx-Basic-Auth vor staging.
+                                     Dann: Authorization: Basic …, Token in X-API-Authorization
   Defaults: production https://app.ausbildung-in-der-it.de, staging https://staging.ausbildung-in-der-it.de
   Token: Backoffice > System > API Tokens, Besitzer = du selbst (Plattform-Admin),
   Scopes cancellation-requests:read (list/show) und cancellation-requests:write (confirm/reject).
@@ -327,7 +334,7 @@ IO-KONVENTIONEN
             {"error":"…","status":409,"current_status":"rejected"} bzw. mit "errors" bei 422
   Exit 0    Erfolg, auch Vorschau und already_confirmed/already_rejected
   Exit 1    Aufruf-/Konfigurationsfehler (Flag, ID, Token fehlt), kein Request verschickt
-  Exit 2    API-Fehler: 401/403 (Token, Scope, Besitzer kein Plattform-Admin), 404, 409, 422,
+  Exit 2    API-Fehler: 401/403 (Token, Scope, Besitzer kein Plattform-Admin, Basic-Auth), 404, 409, 422,
             5xx oder Server nicht erreichbar (status 0)
 
 BEISPIELE

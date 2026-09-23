@@ -66,7 +66,14 @@ export interface RecordedCall {
   body: string | undefined;
 }
 
-export type FetchResponder = (call: RecordedCall) => { status: number; body: unknown } | Promise<never>;
+export interface StubResponse {
+  status: number;
+  body: unknown;
+  /** Response-Header; ohne Angabe Content-Type application/json */
+  headers?: Record<string, string>;
+}
+
+export type FetchResponder = (call: RecordedCall) => StubResponse | Promise<never>;
 
 const originalFetch = globalThis.fetch;
 
@@ -81,9 +88,9 @@ export function stubFetch(responder: FetchResponder): RecordedCall[] {
       body: init.body === undefined ? undefined : String(init.body),
     };
     calls.push(call);
-    const { status, body } = await responder(call);
+    const { status, body, headers } = await responder(call);
     const text = typeof body === 'string' ? body : body === undefined ? '' : JSON.stringify(body);
-    return new Response(text, { status, headers: { 'Content-Type': 'application/json' } });
+    return new Response(text, { status, headers: headers ?? { 'Content-Type': 'application/json' } });
   }) as typeof fetch;
   return calls;
 }

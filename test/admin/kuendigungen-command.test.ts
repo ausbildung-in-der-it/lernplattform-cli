@@ -171,4 +171,23 @@ describe('lernplattform kuendigungen', () => {
     assert.match(result.stdout, /VERÄNDERND, nur nach Ansage/);
     assert.match(result.stdout, /LERNPLATTFORM_ADMIN_TOKEN/);
   });
+
+  it('--env=staging sends Basic-Auth plus X-API-Authorization and names the ENV on an nginx 401', async () => {
+    const env = { LERNPLATTFORM_STAGING_ADMIN_TOKEN: 'stg-token', LERNPLATTFORM_STAGING_BASIC_AUTH: 'stage-user:s3cret' };
+    const calls = stubFetch(() => ({
+      status: 401,
+      body: '<html><head><title>401 Authorization Required</title></head></html>',
+      headers: { 'Content-Type': 'text/html', 'WWW-Authenticate': 'Basic realm="Restricted Area"' },
+    }));
+
+    const result = await execute(['list', '--env=staging'], env);
+
+    assert.equal(calls[0].url.startsWith('https://staging.ausbildung-in-der-it.de/api/admin/v1/'), true);
+    assert.equal(calls[0].headers.Authorization, `Basic ${Buffer.from('stage-user:s3cret').toString('base64')}`);
+    assert.equal(calls[0].headers['X-API-Authorization'], 'Bearer stg-token');
+    assert.equal(result.exitCode, EXIT_API);
+    assert.match(result.stderr, /^Ziel: https:\/\/staging\.ausbildung-in-der-it\.de \(staging, mit Basic-Auth\)/);
+    assert.match(String(lastStderrJson(result.stderr).error), /Basic-Auth abgelehnt \(nginx\)\. Zugangsdaten in LERNPLATTFORM_STAGING_BASIC_AUTH prüfen/);
+    assert.doesNotMatch(result.stderr, /stage-user|s3cret|stg-token/);
+  });
 });

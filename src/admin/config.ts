@@ -19,6 +19,14 @@ export const TOKEN_VARIABLES: Record<AdminEnvironment, string> = {
   staging: 'LERNPLATTFORM_STAGING_ADMIN_TOKEN',
 };
 
+/**
+ * Basic-Auth vor der Plattform (nginx auth_basic), Format user:passwort.
+ * Nur staging steht hinter Basic-Auth; production braucht keine.
+ */
+export const BASIC_AUTH_VARIABLES: Partial<Record<AdminEnvironment, string>> = {
+  staging: 'LERNPLATTFORM_STAGING_BASIC_AUTH',
+};
+
 export const BASE_URL_VARIABLE = 'LERNPLATTFORM_BASE_URL';
 export const ENVIRONMENT_VARIABLE = 'LERNPLATTFORM_ENV';
 
@@ -29,6 +37,10 @@ export interface AdminApiTarget {
   baseUrlOverridden: boolean;
   token: string;
   tokenVariable: string;
+  /** user:passwort für nginx-Basic-Auth, nur wenn die Variable der Umgebung gesetzt ist */
+  basicAuth?: string;
+  /** Name der Basic-Auth-Variable der Umgebung, für Fehlermeldungen */
+  basicAuthVariable?: string;
 }
 
 /** Aufruf- oder Konfigurationsfehler vor dem ersten HTTP-Request (Exit 1). */
@@ -59,6 +71,7 @@ export function parseEnvironment(value: unknown): AdminEnvironment {
  *  - Umgebung: --env > $LERNPLATTFORM_ENV > production
  *  - Base-URL: $LERNPLATTFORM_BASE_URL > Default-URL der Umgebung
  *  - Token:    production -> $LERNPLATTFORM_ADMIN_TOKEN, staging -> $LERNPLATTFORM_STAGING_ADMIN_TOKEN
+ *  - Basic-Auth: staging -> $LERNPLATTFORM_STAGING_BASIC_AUTH (optional, user:passwort)
  */
 export function resolveAdminApiTarget(
   envFlag: unknown,
@@ -78,16 +91,28 @@ export function resolveAdminApiTarget(
     );
   }
 
+  const basicAuthVariable = BASIC_AUTH_VARIABLES[environment];
+  const basicAuth = basicAuthVariable ? env[basicAuthVariable]?.trim() || undefined : undefined;
+  if (basicAuth !== undefined && !/^[^:]+:.+$/.test(basicAuth)) {
+    // Wert bewusst nicht ausgeben, er enthält ein Passwort.
+    throw new AdminUsageError(`${basicAuthVariable} hat nicht das Format user:passwort.`);
+  }
+
   return {
     environment,
     baseUrl,
     baseUrlOverridden: Boolean(overrideUrl),
     token,
     tokenVariable,
+    basicAuth,
+    basicAuthVariable,
   };
 }
 
-export function describeTarget(target: Pick<AdminApiTarget, 'baseUrl' | 'environment' | 'baseUrlOverridden'>): string {
+export function describeTarget(
+  target: Pick<AdminApiTarget, 'baseUrl' | 'environment' | 'baseUrlOverridden'> & Partial<Pick<AdminApiTarget, 'basicAuth'>>
+): string {
   const source = target.baseUrlOverridden ? `${BASE_URL_VARIABLE}, Token für ${target.environment}` : target.environment;
-  return `${target.baseUrl} (${source})`;
+  const basicAuth = target.basicAuth ? ', mit Basic-Auth' : '';
+  return `${target.baseUrl} (${source}${basicAuth})`;
 }

@@ -5634,11 +5634,15 @@ var AdminApiClient = class {
   apiBaseUrl;
   token;
   timeoutMs;
+  basicAuth;
+  basicAuthVariable;
   constructor(options) {
     const host = options.baseUrl.replace(/\/+$/, "");
     this.apiBaseUrl = `${host}${options.apiPrefix ?? ADMIN_API_PREFIX}`;
     this.token = options.token;
     this.timeoutMs = options.timeoutMs ?? ADMIN_API_DEFAULT_TIMEOUT_MS;
+    this.basicAuth = options.basicAuth || void 0;
+    this.basicAuthVariable = options.basicAuthVariable ?? "LERNPLATTFORM_STAGING_BASIC_AUTH";
   }
   async get(path2, query = {}) {
     return this.request("GET", this.buildUrl(path2, query), { Accept: "application/json" });
@@ -5668,19 +5672,40 @@ var AdminApiClient = class {
       response = await fetch(url, {
         method,
         body,
-        headers: { ...headers, Authorization: `Bearer ${this.token}` },
+        headers: { ...headers, ...this.authHeaders() },
         signal: AbortSignal.timeout(this.timeoutMs)
       });
     } catch (error) {
       throw transportError(error, url, this.timeoutMs);
     }
     const payload = await readBody(response);
+    if (isBasicAuthChallenge(response, payload)) {
+      throw new AdminApiError(this.basicAuthHint(), response.status, payload);
+    }
     if (!response.ok) {
       throw new AdminApiError(describeErrorBody(response.status, payload, response.statusText), response.status, payload);
     }
     return payload;
   }
+  authHeaders() {
+    const bearer = `Bearer ${this.token}`;
+    if (!this.basicAuth) {
+      return { Authorization: bearer };
+    }
+    return {
+      Authorization: `Basic ${Buffer.from(this.basicAuth, "utf8").toString("base64")}`,
+      "X-API-Authorization": bearer
+    };
+  }
+  basicAuthHint() {
+    return this.basicAuth ? `Basic-Auth abgelehnt (nginx). Zugangsdaten in ${this.basicAuthVariable} pr\xFCfen (Format user:passwort).` : `Basic-Auth erforderlich (nginx). ${this.basicAuthVariable}=user:passwort setzen.`;
+  }
 };
+function isBasicAuthChallenge(response, payload) {
+  if (response.status !== 401 || payload !== void 0 && typeof payload !== "string") return false;
+  const challenge = response.headers.get("www-authenticate") ?? "";
+  return /^basic\b/i.test(challenge) || typeof payload === "string" && payload.includes("401 Authorization Required");
+}
 async function readBody(response) {
   const text = await response.text();
   if (!text) return void 0;
@@ -5746,6 +5771,9 @@ var TOKEN_VARIABLES = {
   production: "LERNPLATTFORM_ADMIN_TOKEN",
   staging: "LERNPLATTFORM_STAGING_ADMIN_TOKEN"
 };
+var BASIC_AUTH_VARIABLES = {
+  staging: "LERNPLATTFORM_STAGING_BASIC_AUTH"
+};
 var BASE_URL_VARIABLE = "LERNPLATTFORM_BASE_URL";
 var ENVIRONMENT_VARIABLE = "LERNPLATTFORM_ENV";
 var AdminUsageError = class extends Error {
@@ -5777,17 +5805,25 @@ function resolveAdminApiTarget(envFlag, env = process.env) {
       `${tokenVariable} ist nicht gesetzt (Umgebung ${environment}). Eigenen Admin-Token im Backoffice unter System > API Tokens anlegen (Besitzer: du, Scopes cancellation-requests:read und :write) und in ~/.config/lernplattform/.env eintragen.`
     );
   }
+  const basicAuthVariable = BASIC_AUTH_VARIABLES[environment];
+  const basicAuth = basicAuthVariable ? env[basicAuthVariable]?.trim() || void 0 : void 0;
+  if (basicAuth !== void 0 && !/^[^:]+:.+$/.test(basicAuth)) {
+    throw new AdminUsageError(`${basicAuthVariable} hat nicht das Format user:passwort.`);
+  }
   return {
     environment,
     baseUrl,
     baseUrlOverridden: Boolean(overrideUrl),
     token,
-    tokenVariable
+    tokenVariable,
+    basicAuth,
+    basicAuthVariable
   };
 }
 function describeTarget(target) {
   const source = target.baseUrlOverridden ? `${BASE_URL_VARIABLE}, Token f\xFCr ${target.environment}` : target.environment;
-  return `${target.baseUrl} (${source})`;
+  const basicAuth = target.basicAuth ? ", mit Basic-Auth" : "";
+  return `${target.baseUrl} (${source}${basicAuth})`;
 }
 
 // src/admin/cancellation-requests.ts
@@ -6359,7 +6395,12 @@ async function executeKuendigungen(argv, io) {
     assertKnownFlags(operation, args);
     const target = resolveAdminApiTarget(args.flags.env, io.env);
     io.err(`Ziel: ${describeTarget(target)}`);
-    const client = new AdminApiClient({ baseUrl: target.baseUrl, token: target.token });
+    const client = new AdminApiClient({
+      baseUrl: target.baseUrl,
+      token: target.token,
+      basicAuth: target.basicAuth,
+      basicAuthVariable: target.basicAuthVariable
+    });
     await handler(client, args, io, target);
     return EXIT_OK;
   } catch (error) {
@@ -6434,6 +6475,8 @@ UMGEBUNG UND TOKEN (getrennt vom Content-Token AIDI_API_TOKEN)
   LERNPLATTFORM_STAGING_ADMIN_TOKEN  Admin-Token f\xFCr staging   (Pflicht f\xFCr --env=staging)
   LERNPLATTFORM_ENV                  Default f\xFCr --env
   LERNPLATTFORM_BASE_URL             \xDCbersteuert die URL (z. B. lokale Instanz), Token nach --env
+  LERNPLATTFORM_STAGING_BASIC_AUTH   user:passwort f\xFCr die nginx-Basic-Auth vor staging.
+                                     Dann: Authorization: Basic \u2026, Token in X-API-Authorization
   Defaults: production https://app.ausbildung-in-der-it.de, staging https://staging.ausbildung-in-der-it.de
   Token: Backoffice > System > API Tokens, Besitzer = du selbst (Plattform-Admin),
   Scopes cancellation-requests:read (list/show) und cancellation-requests:write (confirm/reject).
@@ -6445,7 +6488,7 @@ IO-KONVENTIONEN
             {"error":"\u2026","status":409,"current_status":"rejected"} bzw. mit "errors" bei 422
   Exit 0    Erfolg, auch Vorschau und already_confirmed/already_rejected
   Exit 1    Aufruf-/Konfigurationsfehler (Flag, ID, Token fehlt), kein Request verschickt
-  Exit 2    API-Fehler: 401/403 (Token, Scope, Besitzer kein Plattform-Admin), 404, 409, 422,
+  Exit 2    API-Fehler: 401/403 (Token, Scope, Besitzer kein Plattform-Admin, Basic-Auth), 404, 409, 422,
             5xx oder Server nicht erreichbar (status 0)
 
 BEISPIELE
