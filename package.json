@@ -15,6 +15,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "tsup --config tsup.test.config.ts && node --test .test-build/",
     "smoke": "node bin/lernplattform.mjs --help"
   },
   "engines": {

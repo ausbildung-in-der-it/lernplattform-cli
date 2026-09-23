@@ -132,6 +132,7 @@ lernplattform search "datenbanken"
 | `discussion` | – | list, get, comment, solve, unsolve, update-comment, delete-comment, accept |
 | `search` | `aidi-search` | (Argument: Query-String) |
 | `image-upload` | – | (Argument: Pfad zur Bilddatei) |
+| `kuendigungen` | – | list, show, confirm, reject (Admin-API, eigener Token, siehe unten) |
 
 Detaillierte Hilfe pro Bereich:
 
@@ -139,6 +140,62 @@ Detaillierte Hilfe pro Bereich:
 lernplattform lesson help
 lernplattform blocks help
 ```
+
+## Kündigungen (Admin)
+
+Kündigungsanfragen der Plattform prüfen und bearbeiten, über die Admin-API `/api/admin/v1/cancellation-requests`. Jede Person im Team nutzt dafür einen **eigenen** Token: Die Plattform trägt den Token-Besitzer als bearbeitende Person (`reviewed_by`) ein.
+
+```bash
+# Lesend, frei
+lernplattform kuendigungen list                          # offene Anfragen (pending), älteste zuerst
+lernplattform kuendigungen list --status=all --page=2    # pending|confirmed|rejected|withdrawn|all
+lernplattform kuendigungen show 12                       # Teilnehmer, Pass, Abo, Wirksamkeitsdatum, Erstattung, Warnungen
+lernplattform kuendigungen show 12 --json
+
+# VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau
+lernplattform kuendigungen confirm 12 --notiz="Telefonisch geklärt"          # Vorschau
+lernplattform kuendigungen confirm 12 --notiz="Telefonisch geklärt" --force  # bestätigt wirklich
+lernplattform kuendigungen reject 12 --grund="Mindestlaufzeit nicht erreicht"          # Vorschau
+lernplattform kuendigungen reject 12 --grund="Mindestlaufzeit nicht erreicht" --force  # lehnt wirklich ab
+```
+
+> **`confirm --force` und `reject --force` sind verändernd und nur nach ausdrücklicher Ansage auszuführen.** Beide schicken eine Mail an den echten Teilnehmer, `confirm --force` kündigt zusätzlich ein vorhandenes Stripe-Abo zum gespeicherten Wirksamkeitsdatum. Die berechnete Erstattung wird **nicht** automatisch ausgelöst. Ohne `--force` zeigen beide Befehle nur, was passieren würde. Wer die CLI von einem Agenten bedienen lässt: Vorschau zeigen lassen, dann selbst freigeben.
+
+Bereits bestätigte bzw. abgelehnte Anfragen bleiben bei einem erneuten Aufruf unverändert (`already_confirmed`/`already_rejected`, keine zweite Mail). Ein unpassender Status (z. B. `confirm` auf eine abgelehnte Anfrage) ergibt 409 mit `current_status`. Erscheint nach `confirm --force` die Warnung `STRIPE-KUENDIGUNG-FEHLT` (`subscription_cancel_at_missing`), ist die Stripe-Kündigung vermutlich fehlgeschlagen: in Stripe prüfen und das Abo manuell kündigen.
+
+### Token anlegen
+
+1. Im Backoffice (`/backoffice`) unter **System > API Tokens** einen neuen Token anlegen.
+2. **Owner:** dich selbst auswählen. Nur Plattform-Admins (verifizierte E-Mail mit Admin-Domain) sind wählbar; ohne passenden Besitzer antwortet die API mit 403 `Token owner is not a platform admin`.
+3. **Permissions:** `cancellation-requests:read` (list, show, Vorschau) und `cancellation-requests:write` (confirm, reject mit `--force`).
+4. Ablaufdatum setzen (Vorschlag: 6 Monate). Den Klartext-Token zeigt Filament nur einmal an.
+5. Für staging denselben Ablauf auf `https://staging.ausbildung-in-der-it.de/backoffice` wiederholen; Tokens gelten nur in der Umgebung, in der sie angelegt wurden.
+
+### Konfiguration
+
+Der Admin-Token ist bewusst getrennt vom Content-Token (`AIDI_API_TOKEN`, `AIDI_HOST_URL` gelten für die Admin-Befehle nicht). Eintragen in `~/.config/lernplattform/.env` (gleiche Lookup-Reihenfolge wie oben), nie ins Repo:
+
+| Variable | Wirkung |
+|---|---|
+| `LERNPLATTFORM_ADMIN_TOKEN` | Token für production (Pflicht für `--env=production`, den Default) |
+| `LERNPLATTFORM_STAGING_ADMIN_TOKEN` | Token für staging (Pflicht für `--env=staging`) |
+| `LERNPLATTFORM_ENV` | Default für `--env` (`production` oder `staging`) |
+| `LERNPLATTFORM_BASE_URL` | Übersteuert die URL, etwa für eine lokale Instanz. Der Token kommt weiter aus der Variable der gewählten Umgebung |
+
+Defaults: production `https://app.ausbildung-in-der-it.de`, staging `https://staging.ausbildung-in-der-it.de`. Jeder Aufruf schreibt das Ziel auf stderr (`Ziel: <url> (<umgebung>)`), die Vorschau zusätzlich auf stdout.
+
+```bash
+lernplattform kuendigungen list --env=staging
+LERNPLATTFORM_BASE_URL=http://127.0.0.1:8000 lernplattform kuendigungen list   # lokale Plattform, Token aus LERNPLATTFORM_ADMIN_TOKEN
+```
+
+### Ausgabe und Exit-Codes
+
+- stdout: Tabelle bzw. Text, mit `--json` das JSON der API. Die Vorschau mit `--json` liefert `{"mode":"preview","changes_state":…,"lines":[…],"data":{…}}`.
+- stderr: Ziel-Zeile und Fehler als JSON, z. B. `{"error":"…","status":409,"current_status":"rejected"}`, bei 422 zusätzlich `errors`.
+- Exit 0: Erfolg, auch Vorschau und `already_*`. Exit 1: Aufruf- oder Konfigurationsfehler, kein Request verschickt. Exit 2: API-Fehler (401/403/404/409/422/5xx) oder Server nicht erreichbar.
+
+Details und Warnungs-Kurzcodes: `lernplattform kuendigungen --help`.
 
 ## Migration von npm-Scripts
 
@@ -157,4 +214,8 @@ Wer das aidi-agents-Repo nutzt: die alten `npm run lesson:get …` Befehle bleib
 npm run dev      # tsup --watch
 npm run build    # einmaliger Build
 npm run smoke    # ruft lernplattform --help über bin/lernplattform.mjs auf
+npm test         # baut test/**/*.test.ts nach .test-build/ und startet node --test (fetch gestubbt)
+npm run typecheck
 ```
+
+`dist/` ist committet, damit GitHub-Installs ohne Build funktionieren: nach Änderungen an `src/` immer `npm run build` ausführen und `dist/cli.js` mitcommitten.
