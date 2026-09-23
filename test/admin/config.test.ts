@@ -11,6 +11,8 @@ describe('resolveAdminApiTarget', () => {
     assert.equal(target.baseUrl, 'https://app.ausbildung-in-der-it.de');
     assert.equal(target.token, 'prod');
     assert.equal(target.baseUrlOverridden, false);
+    assert.equal(target.environmentExplicit, false);
+    assert.equal(describeTarget(target), 'https://app.ausbildung-in-der-it.de (PRODUCTION, Default ohne --env)');
   });
 
   it('uses the staging URL and staging token for --env=staging', () => {
@@ -59,7 +61,7 @@ describe('resolveAdminApiTarget', () => {
 
     const production = resolveAdminApiTarget('production', env);
     assert.equal(production.basicAuth, undefined);
-    assert.equal(describeTarget(production), 'https://app.ausbildung-in-der-it.de (production)');
+    assert.equal(describeTarget(production), 'https://app.ausbildung-in-der-it.de (PRODUCTION)');
   });
 
   it('leaves Basic-Auth off when the staging variable is empty', () => {

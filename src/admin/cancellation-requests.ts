@@ -16,15 +16,40 @@ export const CANCELLATION_STATUS_FILTERS: readonly CancellationStatusFilter[] = 
 
 export type CancellationType = 'ordentlich' | 'ausserordentlich' | 'widerruf';
 export type PaymentMode = 'free' | 'one_time' | 'subscription';
-export type RefundStatus = 'none' | 'pending' | 'refunded' | 'failed';
+/** partially_refunded: nach einer Erstattung kam noch eine Zahlung, der Rest ist offen (refund zahlt ihn) */
+export type RefundStatus = 'none' | 'pending' | 'refunded' | 'partially_refunded' | 'failed';
 export type SubscriptionCancellationStatus =
   | 'scheduled'
   | 'already_scheduled'
   | 'canceled_immediately'
   | 'already_ended'
   | 'not_found'
+  /** alt: vor dem Review-Fix K1 wurden Bündel-Abos nicht gekündigt; die Plattform schreibt den Wert nicht mehr */
   | 'bundle_skipped'
   | 'failed';
+
+/** Warum eine Erklärung unzulässig ist (rejection_ground). Eine wirksame Kündigung wird bestätigt, nicht abgelehnt. */
+export const REJECTION_GROUNDS = {
+  duplikat: 'duplicate',
+  'keine-erklaerung': 'not_a_declaration',
+  'falscher-vertrag': 'wrong_contract',
+  'widerruf-ausgeschlossen': 'withdrawal_not_available',
+} as const;
+export type RejectionGround = (typeof REJECTION_GROUNDS)[keyof typeof REJECTION_GROUNDS];
+
+export const REJECTION_GROUND_LABELS: Record<RejectionGround, string> = {
+  duplicate: 'Doppelte Erklärung zu einem Vertrag, der schon gekündigt ist oder geprüft wird',
+  not_a_declaration: 'Keine Kündigungserklärung (Frage, Versehen, zurückgenommen)',
+  wrong_contract: 'Betrifft keinen Vertrag des Absenders (falscher Pass, kein Vertragspartner)',
+  withdrawal_not_available: 'Widerruf ausgeschlossen: Frist abgelaufen oder kein Verbrauchervertrag',
+};
+
+/** Deutscher Kurzname oder API-Wert -> API-Wert; null, wenn unbekannt. */
+export function parseRejectionGround(value: string): RejectionGround | null {
+  const normalized = value.trim().toLowerCase();
+  if (normalized in REJECTION_GROUNDS) return REJECTION_GROUNDS[normalized as keyof typeof REJECTION_GROUNDS];
+  return (Object.values(REJECTION_GROUNDS) as string[]).includes(normalized) ? (normalized as RejectionGround) : null;
+}
 
 /** Warn-Codes der Plattform (CancellationWarningCode), mit denen die CLI eigene Texte verbindet. */
 export const WARNING = {
@@ -41,6 +66,8 @@ export const WARNING = {
   withdrawalRefundDue: 'withdrawal_refund_due',
   importantReasonDecisionRequired: 'important_reason_decision_required',
   bundleSubscription: 'bundle_subscription',
+  bundleSubscriptionAmbiguous: 'bundle_subscription_ambiguous',
+  refundOutstanding: 'refund_outstanding',
   subscriptionCancellationFailed: 'subscription_cancellation_failed',
   refundFailed: 'refund_failed',
   withdrawalPossible: 'withdrawal_possible',
@@ -56,6 +83,7 @@ export const CRITICAL_WARNINGS: readonly string[] = [
   WARNING.subscriptionNotFound,
   WARNING.refundFailed,
   WARNING.paidAmountUnknown,
+  WARNING.bundleSubscriptionAmbiguous,
 ];
 
 /** Text für paid_amount_unknown in show, Liste und Vorschau. */
@@ -186,12 +214,17 @@ export interface CancellationRequestDetail {
   subscription_cancellation: {
     status: SubscriptionCancellationStatus | null;
     error: string | null;
+    /** Bündel = ein Vertrag: die anderen Pässe des Abos, die mit enden (vor der Bestätigung: enden würden) */
+    bundle_user_pass_ids?: number[];
+    /** Abo bezahlt Pässe aus einem anderen Kauf: Bestätigen gesperrt (409 bundle_subscription_ambiguous) */
+    bundle_ambiguous?: boolean;
   };
   review: {
     reviewed_at: string | null;
     reviewed_by: { id: number; name: string | null; email: string } | null;
     admin_notes: string | null;
     rejection_reason: string | null;
+    rejection_ground?: RejectionGround | null;
   };
   warnings: CancellationWarning[];
 }
@@ -253,11 +286,12 @@ export async function rejectCancellationRequest(
   client: AdminApiClient,
   id: number,
   rejectionReason: string,
+  rejectionGround: RejectionGround,
   options: { idempotencyKey?: string } = {}
 ): Promise<CancellationActionResponse> {
   return client.post<CancellationActionResponse>(
     `${BASE_PATH}/${id}/rejection`,
-    { rejection_reason: rejectionReason },
+    { rejection_ground: rejectionGround, rejection_reason: rejectionReason },
     { idempotencyKey: options.idempotencyKey }
   );
 }
@@ -337,6 +371,8 @@ export const SHORT_WARNING_LABELS: Record<string, string> = {
   [WARNING.withdrawalRefundDue]: 'widerruf-erstatten',
   [WARNING.importantReasonDecisionRequired]: 'wichtiger-grund-offen',
   [WARNING.bundleSubscription]: 'abo-buendel',
+  [WARNING.bundleSubscriptionAmbiguous]: 'ABO-BUENDEL-UNKLAR',
+  [WARNING.refundOutstanding]: 'erstattung-offen',
   [WARNING.subscriptionCancellationFailed]: 'ABO-KUENDIGUNG-FEHLGESCHLAGEN',
   [WARNING.refundFailed]: 'ERSTATTUNG-FEHLGESCHLAGEN',
   [WARNING.withdrawalPossible]: 'widerruf-moeglich',
@@ -365,6 +401,7 @@ export const SHORT_REFUND_STATUS_LABELS: Record<RefundStatus, string> = {
   none: DASH,
   pending: 'läuft',
   refunded: 'erstattet',
+  partially_refunded: 'REST-OFFEN',
   failed: 'FEHLGESCHLAGEN',
 };
 
@@ -374,7 +411,7 @@ export const SUBSCRIPTION_CANCELLATION_LABELS: Record<SubscriptionCancellationSt
   canceled_immediately: 'sofort gekündigt',
   already_ended: 'war bereits beendet',
   not_found: 'in Stripe nicht gefunden, nichts gekündigt',
-  bundle_skipped: 'nicht gekündigt: Abo bezahlt mehrere Pässe, in Stripe klären',
+  bundle_skipped: 'nicht gekündigt (alte Bündel-Regel): Abo bezahlt mehrere Pässe, in Stripe prüfen',
   failed: 'FEHLGESCHLAGEN, in Stripe kündigen',
 };
 
@@ -474,7 +511,7 @@ function effectiveOutcome(
       lines: [
         {
           kind: 'action',
-          text: `Wird als Widerruf behandelt: ${fullAmount}, Zugang und Abo enden sofort, Erstattung fällig bis ${formatGermanDate(due)} (§ 4 FernUSG, §§ 355, 357 BGB).`,
+          text: `Wird als Widerruf behandelt: ${fullAmount}, Vertrag endet mit Zugang am ${received}, Zugang und Abo enden mit der Bestätigung, Erstattung fällig bis ${formatGermanDate(due)} (§§ 355, 357 BGB).`,
         },
       ],
     };
@@ -487,7 +524,7 @@ function effectiveOutcome(
       lines: [
         {
           kind: 'action',
-          text: `Widerruf (§ 4 FernUSG, § 355 BGB): Der Vertrag endet sofort mit Zugang am ${received}, der gezahlte Betrag ist vollständig zu erstatten.`,
+          text: `Widerruf (§ 355 BGB): Der Vertrag endet mit Zugang am ${received}, Zugang und Abo mit der Bestätigung, der gezahlte Betrag ist vollständig zu erstatten.`,
         },
       ],
     };
@@ -501,19 +538,6 @@ function effectiveOutcome(
         {
           kind: 'action',
           text: `Wichtiger Grund wird anerkannt (§ 314 BGB): sofortige Wirkung, Wirksamkeitsdatum = Zugang am ${received}.`,
-        },
-      ],
-    };
-  }
-
-  if (!detail.pass) {
-    return {
-      date: stored,
-      immediate: false,
-      lines: [
-        {
-          kind: 'warning',
-          text: `Pass gelöscht: Das gespeicherte Wirksamkeitsdatum ${formatGermanDate(stored)} bleibt, Zugang, Abo und Erstattung lassen sich nicht prüfen.`,
         },
       ],
     };
@@ -563,16 +587,24 @@ function accessLine(detail: CancellationRequestDetail, outcome: EffectiveOutcome
   return { kind: 'action', text: `Zugangsende: ${formatGermanDate(outcome.date)} 23:59 (bisher gültig ${validUntil ? `bis ${formatGermanDate(validUntil)}` : 'unbegrenzt'}).` };
 }
 
+/**
+ * Bündel = ein Vertrag (Review K1): Die Bestätigung beendet den Zugang aller
+ * Pässe des Abos zum selben Zeitpunkt, das Abo selbst endet wie jedes andere.
+ */
+function bundleLine(detail: CancellationRequestDetail, outcome: EffectiveOutcome): PreviewLine | null {
+  const ids = detail.subscription_cancellation?.bundle_user_pass_ids ?? [];
+  if (ids.length === 0) return null;
+
+  const when = outcome.immediate ? 'mit der Bestätigung' : `zum ${formatGermanDate(outcome.date)}`;
+  return {
+    kind: 'action',
+    text: `Bündel (ein Vertrag): Zugang der Pässe ${ids.map((id) => `#${id}`).join(', ')} endet ebenfalls ${when}, die Mail nennt sie.`,
+  };
+}
+
 /** Wie EndSubscriptionForCancellationAction das Stripe-Abo behandelt. */
 function subscriptionLine(detail: CancellationRequestDetail, outcome: EffectiveOutcome, today: string): PreviewLine | null {
   const { subscription } = detail;
-
-  if (hasWarning(detail.warnings, WARNING.bundleSubscription)) {
-    return {
-      kind: 'warning',
-      text: 'Stripe-Abo bezahlt mehrere Pässe (Bündel/Firmenlizenzen) und wird NICHT automatisch gekündigt. In Stripe klären.',
-    };
-  }
 
   if (!subscription) {
     return detail.payment_mode === 'subscription'
@@ -589,7 +621,8 @@ function subscriptionLine(detail: CancellationRequestDetail, outcome: EffectiveO
     return { kind: 'action', text: `Stripe-Abo ${id} wird sofort gekündigt (ohne anteilige Gutschrift).` };
   }
 
-  return { kind: 'action', text: `Stripe-Abo-Ende: ${id} wird zum ${formatGermanDate(outcome.date)} gekündigt (cancel_at).` };
+  const bundle = (detail.subscription_cancellation?.bundle_user_pass_ids ?? []).length > 0 ? ', für das ganze Bündel' : '';
+  return { kind: 'action', text: `Stripe-Abo-Ende: ${id} wird zum ${formatGermanDate(outcome.date)} gekündigt (cancel_at${bundle}).` };
 }
 
 function confirmRefundLine(
@@ -647,6 +680,9 @@ function unprocessableDecision(detail: CancellationRequestDetail, options: Confi
   if (options.treatAsWithdrawal && detail.type === 'widerruf') {
     return `${label} ist bereits ein Widerruf, --als-widerruf ist nicht nötig.`;
   }
+  if (options.treatAsWithdrawal && detail.pass?.is_b2b) {
+    return `${label} betrifft einen Firmenpass: Ein Widerrufsrecht haben nur Verbraucher (§§ 312g, 355 BGB), --als-widerruf geht nicht.`;
+  }
   if (options.treatAsWithdrawal && !hasWarning(detail.warnings, WARNING.withdrawalPossible)) {
     return `--als-widerruf geht nur, wenn die Anfrage innerhalb von 14 Tagen nach dem Kauf einging (Warnung withdrawal_possible fehlt bei ${label}).`;
   }
@@ -693,6 +729,33 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
     };
   }
 
+  if (!detail.pass) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: 'blocked',
+          text: `${label}: Der Pass ist gelöscht, Wirksamkeitsdatum und Erstattung lassen sich nicht berechnen. Ein Aufruf mit --force wird mit 409 user_pass_missing abgelehnt. Pass wiederherstellen oder als unzulässig ablehnen (reject --unzulaessig=falscher-vertrag).`,
+        },
+        ...warningLines(detail.warnings, [WARNING.userPassMissing]),
+      ],
+    };
+  }
+
+  if (detail.subscription_cancellation?.bundle_ambiguous || hasWarning(detail.warnings, WARNING.bundleSubscriptionAmbiguous)) {
+    const ids = (detail.subscription_cancellation?.bundle_user_pass_ids ?? []).map((id) => `#${id}`).join(', ');
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: 'blocked',
+          text: `Bestätigen gesperrt: Das Stripe-Abo bezahlt auch Pässe aus einem anderen Kauf${ids ? ` (${ids})` : ''}, welcher Vertrag endet, ist nicht eindeutig. Erst in Stripe klären. Ein Aufruf mit --force wird mit 409 bundle_subscription_ambiguous abgelehnt.`,
+        },
+        ...warningLines(detail.warnings, [WARNING.bundleSubscriptionAmbiguous]),
+      ],
+    };
+  }
+
   if (isLedgerMissing(detail)) {
     return {
       changesState: false,
@@ -721,6 +784,8 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
 
   const access = accessLine(detail, outcome);
   if (access) lines.push(access);
+  const bundle = bundleLine(detail, outcome);
+  if (bundle) lines.push(bundle);
   const subscription = subscriptionLine(detail, outcome, today);
   if (subscription) lines.push(subscription);
 
@@ -733,15 +798,19 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
     lines.push({ kind: 'note', text: `Interne Notiz: ${options.adminNotes}` });
   }
 
-  // Die Entscheidung über wichtigen Grund bzw. Widerruf steht schon in den Zeilen oben.
-  const decided = [WARNING.importantReasonDecisionRequired, ...(treatAsWithdrawal ? [WARNING.withdrawalPossible] : [])];
+  // Die Entscheidung über wichtigen Grund bzw. Widerruf und das Bündel stehen schon in den Zeilen oben.
+  const decided = [
+    WARNING.importantReasonDecisionRequired,
+    WARNING.bundleSubscription,
+    ...(treatAsWithdrawal ? [WARNING.withdrawalPossible] : []),
+  ];
   lines.push(...warningLines(detail.warnings, decided), EXECUTE_HINT);
   return { changesState: true, lines };
 }
 
 function refundReminder(detail: CancellationRequestDetail): PreviewLine[] {
   const outstanding = detail.refund_execution?.outstanding_cents;
-  if (detail.status !== 'confirmed' || !outstanding || outstanding <= 0 || detail.refund_execution.status === 'refunded') {
+  if (detail.status !== 'confirmed' || !outstanding || outstanding <= 0) {
     return [];
   }
   return [
@@ -756,7 +825,10 @@ function refundReminder(detail: CancellationRequestDetail): PreviewLine[] {
 // reject
 // ---------------------------------------------------------------------------
 
-export function buildRejectionPreview(detail: CancellationRequestDetail, rejectionReason: string): ActionPreview {
+const VALID_CANCELLATION_TEXT =
+  'Eine wirksame ordentliche Kündigung wird bestätigt, nicht abgelehnt; eine außerordentliche ohne wichtigen Grund ebenso (Umdeutung). Ablehnen nur bei einer unzulässigen Erklärung.';
+
+export function buildRejectionPreview(detail: CancellationRequestDetail, rejectionReason: string, ground: RejectionGround): ActionPreview {
   const label = `Kündigung #${detail.id}`;
 
   if (detail.status === 'rejected') {
@@ -785,10 +857,24 @@ export function buildRejectionPreview(detail: CancellationRequestDetail, rejecti
     };
   }
 
+  if (ground === 'withdrawal_not_available' && detail.type !== 'widerruf') {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: 'blocked',
+          text: `--unzulaessig=widerruf-ausgeschlossen passt nur zu einem Widerruf, ${label} ist „${detail.type_label}“. ${VALID_CANCELLATION_TEXT} Ein Aufruf mit --force wird mit 422 unprocessable abgelehnt.`,
+        },
+        ...warningLines(detail.warnings),
+      ],
+    };
+  }
+
   return {
     changesState: true,
     lines: [
-      { kind: 'action', text: `${label} wird abgelehnt.` },
+      { kind: 'warning', text: VALID_CANCELLATION_TEXT },
+      { kind: 'action', text: `${label} (${typeText(detail)}) wird als unzulässig abgelehnt: ${REJECTION_GROUND_LABELS[ground]} (${ground}).` },
       { kind: 'action', text: `Ablehnungsmail an ${detail.participant.email} mit Begründung: „${rejectionReason}“` },
       ...warningLines(detail.warnings),
       EXECUTE_HINT,
@@ -856,7 +942,7 @@ export function buildRefundPreview(detail: CancellationRequestDetail): ActionPre
     };
   }
 
-  if (execution.status === 'refunded') {
+  if (execution.status === 'refunded' && (execution.outstanding_cents ?? 0) <= 0) {
     return {
       changesState: false,
       lines: [
@@ -901,7 +987,10 @@ export function buildRefundPreview(detail: CancellationRequestDetail): ActionPre
 
   const lines: PreviewLine[] = [
     { kind: 'blocked', text: REAL_MONEY_TEXT },
-    { kind: 'action', text: `${label}: ${formatEuroCents(outstanding)} werden an ${detail.participant.email} erstattet.` },
+    {
+      kind: 'action',
+      text: `${label}: ${formatEuroCents(outstanding)} werden über Stripe auf das beim Kauf genutzte Zahlungsmittel erstattet (Teilnehmer ${detail.participant.email}).`,
+    },
     ...refundAmountLines(detail, refund),
     { kind: 'action', text: `Offen, wird jetzt erstattet: ${formatEuroCents(outstanding)}` },
     {
@@ -910,6 +999,12 @@ export function buildRefundPreview(detail: CancellationRequestDetail): ActionPre
     },
   ];
 
+  if (execution.status === 'partially_refunded') {
+    lines.push({
+      kind: 'warning',
+      text: `Nach der Erstattung vom ${formatGermanDateTime(execution.refunded_at)} ist noch eine Zahlung eingegangen; --force zahlt nur den Rest, bereits Erstattetes nicht doppelt.`,
+    });
+  }
   if (execution.status === 'failed') {
     lines.push({
       kind: 'warning',
@@ -923,7 +1018,7 @@ export function buildRefundPreview(detail: CancellationRequestDetail): ActionPre
     });
   }
 
-  lines.push(...warningLines(detail.warnings, [WARNING.refundFailed]), {
+  lines.push(...warningLines(detail.warnings, [WARNING.refundFailed, WARNING.refundOutstanding]), {
     kind: 'hint',
     text: 'Zum Ausführen: denselben Befehl mit --force wiederholen. Nur nach ausdrücklicher Freigabe, es fließt echtes Geld.',
   });
@@ -1023,6 +1118,13 @@ export function buildActionResultLines(response: CancellationActionResponse): Pr
     const error = detail.subscription_cancellation.error ? ` (${detail.subscription_cancellation.error})` : '';
     lines.push({ kind: 'note', text: `Abo-Kündigung: ${subscriptionCancellationLabel(detail.subscription_cancellation.status)}${error}` });
   }
+  const bundleIds = detail.status === 'confirmed' ? detail.subscription_cancellation?.bundle_user_pass_ids ?? [] : [];
+  if (bundleIds.length > 0) {
+    lines.push({ kind: 'note', text: `Bündel (ein Vertrag): Zugang der Pässe ${bundleIds.map((id) => `#${id}`).join(', ')} endet mit.` });
+  }
+  if (detail.status === 'rejected' && detail.review.rejection_ground) {
+    lines.push({ kind: 'note', text: `Unzulässig, weil: ${REJECTION_GROUND_LABELS[detail.review.rejection_ground] ?? detail.review.rejection_ground}` });
+  }
 
   const alertCodes = Object.keys(RESULT_ALERTS);
   for (const warning of detail.warnings.filter((item) => alertCodes.includes(item.code))) {
@@ -1040,10 +1142,13 @@ export function buildActionResultLines(response: CancellationActionResponse): Pr
 export const ERROR_CODE_HINTS: Record<string, string> = {
   conflict: 'Die Anfrage ist schon anders bearbeitet. Status mit show <id> prüfen.',
   unprocessable:
-    'Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht außerordentlicher Kündigung, --als-widerruf außerhalb der 14 Tage nach Kauf, beide Flags zusammen oder keine Erstattung berechenbar.',
+    'Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht außerordentlicher Kündigung, --als-widerruf außerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer Kündigung oder einem fristgerechten Widerruf, oder keine Erstattung berechenbar.',
+  bundle_subscription_ambiguous:
+    'Das Stripe-Abo bezahlt auch Pässe aus einem anderen Kauf. Erst in Stripe klären, welcher Vertrag endet, dann erneut bestätigen.',
   paid_amount_unknown: `${LEDGER_MISSING_TEXT}: auf dem Server php artisan pass:backfill-payments, dann erneut.`,
   not_confirmed: 'Erst bestätigen (confirm <id>), dann erstatten.',
   refund_in_progress: 'Es läuft bereits eine Erstattung. Nach 10 Minuten erneut versuchen und vorher mit show <id> den Stand prüfen.',
-  user_pass_missing: 'Der Pass ist gelöscht, die Erstattung lässt sich nicht berechnen. Manuell in Stripe klären.',
+  user_pass_missing:
+    'Der Pass ist gelöscht: Bestätigen und Erstatten lassen sich nicht berechnen. Pass wiederherstellen oder die Erklärung als unzulässig ablehnen (reject --unzulaessig=falscher-vertrag), Geld manuell in Stripe klären.',
   refund_failed: 'Stripe hat die Erstattung abgelehnt. Bereits erstattete Anteile sind gebucht; Ursache in Stripe prüfen, dann refund <id> --force erneut (zahlt nicht doppelt).',
 };

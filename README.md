@@ -159,16 +159,17 @@ lernplattform kuendigungen show 12                       # Teilnehmer, Pass, Abo
 lernplattform kuendigungen show 12 --json
 
 # VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau
-lernplattform kuendigungen confirm 12                               # Vorschau
-lernplattform kuendigungen confirm 12 --wichtiger-grund-anerkannt   # Vorschau: außerordentlich mit sofortiger Wirkung
-lernplattform kuendigungen confirm 12 --als-widerruf                # Vorschau: als Widerruf behandeln
-lernplattform kuendigungen confirm 12 --notiz="Telefonisch geklärt" --force
-lernplattform kuendigungen reject 12 --grund="Mindestlaufzeit nicht erreicht"          # Vorschau
-lernplattform kuendigungen reject 12 --grund="Mindestlaufzeit nicht erreicht" --force
+lernplattform kuendigungen confirm 12 --env=production                               # Vorschau
+lernplattform kuendigungen confirm 12 --env=production --wichtiger-grund-anerkannt   # Vorschau: außerordentlich mit sofortiger Wirkung
+lernplattform kuendigungen confirm 12 --env=production --als-widerruf                # Vorschau: als Widerruf behandeln (nur Verbraucher)
+lernplattform kuendigungen confirm 12 --env=production --notiz="Telefonisch geklärt" --force
+# Ablehnen nur bei unzulässiger Erklärung, eine wirksame Kündigung wird bestätigt:
+lernplattform kuendigungen reject 12 --env=production --unzulaessig=duplikat --grund="Bereits am 18.09. gekündigt"          # Vorschau
+lernplattform kuendigungen reject 12 --env=production --unzulaessig=duplikat --grund="Bereits am 18.09. gekündigt" --force
 
 # VERÄNDERND, ECHTES GELD, nur nach ausdrücklicher Ansage
-lernplattform kuendigungen refund 12            # Vorschau: Betrag, erstattet, offen
-lernplattform kuendigungen refund 12 --force    # zahlt über Stripe aus
+lernplattform kuendigungen refund 12 --env=production            # Vorschau: Betrag, erstattet, offen
+lernplattform kuendigungen refund 12 --env=production --force    # zahlt über Stripe aus
 ```
 
 > **`confirm`, `reject` und `refund` sind verändernd und nur nach ausdrücklicher Ansage mit `--force` auszuführen.** `confirm --force` und `reject --force` schicken eine Mail an den echten Teilnehmer. `confirm --force` kündigt außerdem das Stripe-Abo. `refund --force` zahlt echtes Geld über Stripe aus. Ohne `--force` zeigen alle drei nur, was passieren würde (ein GET, Exit 0). Wer die CLI von einem Agenten bedienen lässt: Vorschau zeigen lassen, dann selbst freigeben.
@@ -209,9 +210,9 @@ Der Admin-Token ist bewusst getrennt vom Content-Token (`AIDI_API_TOKEN`, `AIDI_
 
 | Variable | Wirkung |
 |---|---|
-| `LERNPLATTFORM_ADMIN_TOKEN` | Token für production (Pflicht für `--env=production`, den Default) |
+| `LERNPLATTFORM_ADMIN_TOKEN` | Token für production (Pflicht für `--env=production`) |
 | `LERNPLATTFORM_STAGING_ADMIN_TOKEN` | Token für staging (Pflicht für `--env=staging`) |
-| `LERNPLATTFORM_ENV` | Default für `--env` (`production` oder `staging`) |
+| `LERNPLATTFORM_ENV` | Default für `--env` (`production` oder `staging`). `confirm`, `reject` und `refund` brechen ohne `--env` und ohne diese Variable ab; `list` und `show` fallen auf production zurück und sagen das auf stderr |
 | `LERNPLATTFORM_BASE_URL` | Übersteuert die URL, etwa für eine lokale Instanz. Der Token kommt weiter aus der Variable der gewählten Umgebung |
 | `LERNPLATTFORM_STAGING_BASIC_AUTH` | `user:passwort` für die nginx-Basic-Auth vor staging (Pflicht für `--env=staging`, siehe unten) |
 

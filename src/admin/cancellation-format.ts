@@ -7,6 +7,7 @@ import {
   CRITICAL_WARNINGS,
   DASH,
   LEDGER_MISSING_TEXT,
+  REJECTION_GROUND_LABELS,
   SHORT_REFUND_STATUS_LABELS,
   WARNING,
   formatEuroCents,
@@ -132,6 +133,7 @@ function refundStatusText(status: string | undefined, c: Palette): string {
   if (status === 'failed') return c.red(c.bold(label));
   if (status === 'refunded') return c.green(label);
   if (status === 'pending') return c.yellow(label);
+  if (status === 'partially_refunded') return c.yellow(c.bold(label));
   return c.dim(label);
 }
 
@@ -257,8 +259,11 @@ function refundExecutionSection(detail: CancellationRequestDetail, c: Palette): 
   if (!execution) return section('Erstattung ausgeführt', c.dim('  keine Angabe'), c);
 
   const statusLabel = `${execution.status_label} (${execution.status})`;
+  const statusText = execution.status === 'failed'
+    ? c.red(c.bold(statusLabel))
+    : execution.status === 'partially_refunded' ? c.yellow(c.bold(statusLabel)) : statusLabel;
   const pairs: [string, string][] = [
-    ['Status', execution.status === 'failed' ? c.red(c.bold(statusLabel)) : statusLabel],
+    ['Status', statusText],
     ['Erstattet', execution.refunded_formatted],
     ['Offen', execution.outstanding_cents === null ? `${DASH} (nicht berechenbar)` : formatEuroCents(execution.outstanding_cents)],
     ['Stripe-Refunds', execution.stripe_refund_ids.length > 0 ? execution.stripe_refund_ids.join(', ') : DASH],
@@ -267,7 +272,7 @@ function refundExecutionSection(detail: CancellationRequestDetail, c: Palette): 
   if (execution.error) pairs.push(['Fehler', c.red(execution.error)]);
 
   const outstanding = execution.outstanding_cents ?? 0;
-  if (detail.status === 'confirmed' && execution.status !== 'refunded' && outstanding > 0) {
+  if (detail.status === 'confirmed' && outstanding > 0) {
     pairs.push(['Nächster Schritt', `lernplattform kuendigungen refund ${detail.id} (Vorschau, echtes Geld erst mit --force)`]);
   }
 
@@ -276,20 +281,35 @@ function refundExecutionSection(detail: CancellationRequestDetail, c: Palette): 
 
 function subscriptionCancellationSection(detail: CancellationRequestDetail, c: Palette): string | null {
   const cancellation = detail.subscription_cancellation;
-  if (!cancellation || (!cancellation.status && !cancellation.error)) return null;
+  const bundleIds = cancellation?.bundle_user_pass_ids ?? [];
+  if (!cancellation || (!cancellation.status && !cancellation.error && bundleIds.length === 0 && !cancellation.bundle_ambiguous)) return null;
 
-  const label = subscriptionCancellationLabel(cancellation.status);
-  const pairs: [string, string][] = [
-    ['Ergebnis', cancellation.status === 'failed' || cancellation.status === 'not_found' ? c.red(c.bold(label)) : label],
-  ];
+  const pairs: [string, string][] = [];
+  if (cancellation.status || cancellation.error) {
+    const label = subscriptionCancellationLabel(cancellation.status);
+    pairs.push(['Ergebnis', cancellation.status === 'failed' || cancellation.status === 'not_found' ? c.red(c.bold(label)) : label]);
+  }
   if (cancellation.error) pairs.push(['Fehler', c.red(cancellation.error)]);
-  return section('Abo-Kündigung nach Bestätigung', keyValues(pairs, c), c);
+  if (bundleIds.length > 0) {
+    const verb = detail.status === 'pending' ? 'enden mit' : 'endeten mit';
+    pairs.push(['Bündel', `ein Vertrag, Pässe ${bundleIds.map((id) => `#${id}`).join(', ')} ${verb}`]);
+  }
+  if (cancellation.bundle_ambiguous) {
+    pairs.push(['Bündel', c.red(c.bold('nicht eindeutig: Abo bezahlt Pässe eines anderen Kaufs, Bestätigen gesperrt'))]);
+  }
+  return section('Abo-Kündigung (Bestätigung)', keyValues(pairs, c), c);
 }
 
 /** Gesperrte Schritte ganz oben, damit sie niemand überliest. */
 function blockerBanner(detail: CancellationRequestDetail, c: Palette): string | null {
-  if (!hasWarning(detail.warnings, WARNING.paidAmountUnknown)) return null;
-  return c.red(c.bold(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`));
+  const banners: string[] = [];
+  if (hasWarning(detail.warnings, WARNING.paidAmountUnknown)) {
+    banners.push(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`);
+  }
+  if (hasWarning(detail.warnings, WARNING.bundleSubscriptionAmbiguous)) {
+    banners.push('! Bestätigen gesperrt: Das Stripe-Abo bezahlt auch Pässe aus einem anderen Kauf. Erst in Stripe klären.');
+  }
+  return banners.length > 0 ? banners.map((banner) => c.red(c.bold(banner))).join('\n') : null;
 }
 
 export function renderCancellationDetail(detail: CancellationRequestDetail, c: Palette): string {
@@ -377,6 +397,7 @@ export function renderCancellationDetail(detail: CancellationRequestDetail, c: P
             ['Am', formatGermanDateTime(review.reviewed_at)],
             ['Von', reviewer],
             ['Notiz', orDash(review.admin_notes)],
+            ['Unzulässig, weil', review.rejection_ground ? REJECTION_GROUND_LABELS[review.rejection_ground] ?? review.rejection_ground : DASH],
             ['Ablehnungsgrund', orDash(review.rejection_reason)],
           ],
           c

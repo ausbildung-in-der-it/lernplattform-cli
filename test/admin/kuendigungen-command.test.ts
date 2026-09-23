@@ -5,7 +5,7 @@ import { EXIT_API, EXIT_OK, EXIT_USAGE, executeKuendigungen } from '../../src/co
 import { createPalette } from '../../src/admin/cancellation-format';
 import { cancellationDetail, confirmedDetail, executionWith, refundWith, restoreFetch, stubFetch } from './fixtures';
 
-const ENV = { LERNPLATTFORM_BASE_URL: 'http://127.0.0.1:8124', LERNPLATTFORM_ADMIN_TOKEN: 'secret-token' };
+const ENV = { LERNPLATTFORM_BASE_URL: 'http://127.0.0.1:8124', LERNPLATTFORM_ADMIN_TOKEN: 'secret-token', LERNPLATTFORM_ENV: 'production' };
 
 async function execute(argv: string[], env: NodeJS.ProcessEnv = ENV) {
   const out: string[] = [];
@@ -50,7 +50,7 @@ describe('lernplattform kuendigungen', () => {
     assert.match(result.stdout, /#3\s+01\.09\.2026\s+22 T\s+Max Muster\s+IT-Pass 12 Monate/);
     assert.match(result.stdout, /offen>14d, vertragspreis-fehlt/);
     assert.match(result.stdout, /Seite 1 von 2 · 2 Anfragen gesamt · Status: pending · weiter mit --page 2/);
-    assert.match(result.stderr, /^Ziel: http:\/\/127\.0\.0\.1:8124 \(LERNPLATTFORM_BASE_URL, Token für production\)/);
+    assert.match(result.stderr, /^Ziel: http:\/\/127\.0\.0\.1:8124 \(LERNPLATTFORM_BASE_URL, Token für PRODUCTION\)/);
   });
 
   it('confirm without --force only reads and prints the preview', async () => {
@@ -94,7 +94,7 @@ describe('lernplattform kuendigungen', () => {
   it('reject preview in JSON mode reports mode, changes_state and lines', async () => {
     stubFetch(() => ({ status: 200, body: { data: cancellationDetail({ status: 'confirmed', status_label: 'Bestätigt' }) } }));
 
-    const result = await execute(['reject', '12', '--grund=Zu spät', '--json']);
+    const result = await execute(['reject', '12', '--unzulaessig=duplikat', '--grund=Doppelt', '--json']);
     const payload = JSON.parse(result.stdout);
 
     assert.equal(result.exitCode, EXIT_OK);
@@ -107,7 +107,7 @@ describe('lernplattform kuendigungen', () => {
   it('reject without --grund fails before any request', async () => {
     const calls = stubFetch(() => ({ status: 200, body: {} }));
 
-    for (const argv of [['reject', '12', '--force'], ['reject', '12', '--grund', '--force'], ['reject', '12', '--grund=   ']]) {
+    for (const argv of [['reject', '12', '--unzulaessig=duplikat', '--force'], ['reject', '12', '--unzulaessig=duplikat', '--grund', '--force'], ['reject', '12', '--unzulaessig=duplikat', '--grund=   ']]) {
       const result = await execute(argv);
 
       assert.equal(result.exitCode, EXIT_USAGE, argv.join(' '));
@@ -122,7 +122,7 @@ describe('lernplattform kuendigungen', () => {
       body: { error: 'conflict', message: 'Die Anfrage hat bereits den Status „Bestätigt“ und kann nicht abgelehnt werden.', current_status: 'confirmed', data: {} },
     }));
 
-    const result = await execute(['reject', '12', '--grund=Zu spät', '--force']);
+    const result = await execute(['reject', '12', '--unzulaessig=keine-erklaerung', '--grund=Nur eine Frage', '--force']);
     const payload = lastStderrJson(result.stderr);
 
     assert.equal(result.exitCode, EXIT_API);
@@ -130,6 +130,50 @@ describe('lernplattform kuendigungen', () => {
     assert.equal(payload.current_status, 'confirmed');
     assert.match(String(payload.error), /kann nicht abgelehnt werden/);
     assert.equal(result.stdout, '');
+  });
+
+  it('reject needs --unzulaessig with a known ground and sends it as rejection_ground', async () => {
+    const calls = stubFetch(() => ({
+      status: 200,
+      body: { data: cancellationDetail({ status: 'rejected', status_label: 'Abgelehnt' }), meta: { result: 'rejected' } },
+    }));
+
+    for (const argv of [['reject', '12', '--grund=x', '--force'], ['reject', '12', '--unzulaessig=frist', '--grund=x', '--force']]) {
+      const result = await execute(argv);
+      assert.equal(result.exitCode, EXIT_USAGE, argv.join(' '));
+      assert.match(String(lastStderrJson(result.stderr).error), /--unzulaessig|Unbekannte Art/);
+    }
+    assert.equal(calls.length, 0);
+
+    const result = await execute(['reject', '12', '--unzulaessig=falscher-vertrag', '--grund=Falscher Pass', '--force']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.deepEqual(JSON.parse(calls[0].body ?? ''), { rejection_ground: 'wrong_contract', rejection_reason: 'Falscher Pass' });
+  });
+
+  it('write commands never fall back to production: without --env and LERNPLATTFORM_ENV they abort before any request', async () => {
+    const calls = stubFetch(() => ({ status: 200, body: { data: cancellationDetail() } }));
+    const withoutEnv = { LERNPLATTFORM_ADMIN_TOKEN: 'secret-token' };
+
+    for (const argv of [['confirm', '12'], ['refund', '12', '--force'], ['reject', '12', '--unzulaessig=duplikat', '--grund=x']]) {
+      const result = await execute(argv, withoutEnv);
+      assert.equal(result.exitCode, EXIT_USAGE, argv.join(' '));
+      assert.match(String(lastStderrJson(result.stderr).error), /braucht ein ausdrückliches Ziel: --env=production oder --env=staging/);
+    }
+    assert.equal(calls.length, 0);
+
+    const explicit = await execute(['confirm', '12', '--env=production'], withoutEnv);
+    assert.equal(explicit.exitCode, EXIT_OK);
+    assert.match(explicit.stderr, /^Ziel: https:\/\/app\.ausbildung-in-der-it\.de \(PRODUCTION\)/);
+  });
+
+  it('read commands keep the production default but say so on stderr', async () => {
+    stubFetch(() => ({ status: 200, body: { data: cancellationDetail() } }));
+
+    const result = await execute(['show', '12'], { LERNPLATTFORM_ADMIN_TOKEN: 'secret-token' });
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.match(result.stderr, /^Ziel: https:\/\/app\.ausbildung-in-der-it\.de \(PRODUCTION, Default ohne --env\)/);
   });
 
   it('reports 404 and network errors with exit 2', async () => {
@@ -248,7 +292,7 @@ describe('lernplattform kuendigungen', () => {
     assert.match(result.stdout, /Offen\s+265,81 €/);
     assert.match(result.stdout, /Fehler\s+card_declined/);
     assert.match(result.stdout, /Nächster Schritt\s+lernplattform kuendigungen refund 12/);
-    assert.match(result.stdout, /Abo-Kündigung nach Bestätigung\n\s+Ergebnis\s+nicht gekündigt: Abo bezahlt mehrere Pässe/);
+    assert.match(result.stdout, /Abo-Kündigung \(Bestätigung\)\n\s+Ergebnis\s+nicht gekündigt \(alte Bündel-Regel\): Abo bezahlt mehrere Pässe/);
   });
 
   it('show puts the ledger block on top and survives a deleted pass', async () => {

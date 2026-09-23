@@ -32,6 +32,8 @@ export const ENVIRONMENT_VARIABLE = 'LERNPLATTFORM_ENV';
 
 export interface AdminApiTarget {
   environment: AdminEnvironment;
+  /** true, wenn --env oder $LERNPLATTFORM_ENV die Umgebung gesetzt hat; false beim stillen Default production */
+  environmentExplicit: boolean;
   baseUrl: string;
   /** true, wenn LERNPLATTFORM_BASE_URL die Default-URL der Umgebung übersteuert */
   baseUrlOverridden: boolean;
@@ -68,7 +70,8 @@ export function parseEnvironment(value: unknown): AdminEnvironment {
 
 /**
  * Reihenfolge:
- *  - Umgebung: --env > $LERNPLATTFORM_ENV > production
+ *  - Umgebung: --env > $LERNPLATTFORM_ENV > production (nur für lesende Befehle,
+ *    verändernde verlangen eine ausdrückliche Umgebung, siehe requireExplicitEnvironment)
  *  - Base-URL: $LERNPLATTFORM_BASE_URL > Default-URL der Umgebung
  *  - Token:    production -> $LERNPLATTFORM_ADMIN_TOKEN, staging -> $LERNPLATTFORM_STAGING_ADMIN_TOKEN
  *  - Basic-Auth: staging -> $LERNPLATTFORM_STAGING_BASIC_AUTH (optional, user:passwort)
@@ -77,7 +80,9 @@ export function resolveAdminApiTarget(
   envFlag: unknown,
   env: NodeJS.ProcessEnv = process.env
 ): AdminApiTarget {
-  const environment = parseEnvironment(envFlag ?? env[ENVIRONMENT_VARIABLE]);
+  const requested = envFlag ?? env[ENVIRONMENT_VARIABLE];
+  const environment = parseEnvironment(requested);
+  const environmentExplicit = requested !== undefined && requested !== null && String(requested).trim() !== '';
   const overrideUrl = env[BASE_URL_VARIABLE]?.trim();
   const baseUrl = (overrideUrl || DEFAULT_BASE_URLS[environment]).replace(/\/+$/, '');
 
@@ -100,6 +105,7 @@ export function resolveAdminApiTarget(
 
   return {
     environment,
+    environmentExplicit,
     baseUrl,
     baseUrlOverridden: Boolean(overrideUrl),
     token,
@@ -109,10 +115,26 @@ export function resolveAdminApiTarget(
   };
 }
 
+/**
+ * Verändernde Befehle (confirm, reject, refund) laufen nie still gegen
+ * production: ohne --env und ohne $LERNPLATTFORM_ENV brechen sie ab.
+ */
+export function requireExplicitEnvironment(target: Pick<AdminApiTarget, 'environmentExplicit'>, operation: string): void {
+  if (target.environmentExplicit) return;
+
+  throw new AdminUsageError(
+    `${operation} verändert Daten und braucht ein ausdrückliches Ziel: --env=production oder --env=staging ` +
+      `(alternativ ${ENVIRONMENT_VARIABLE} setzen). Ohne Angabe wird nichts ausgeführt, auch keine Vorschau.`
+  );
+}
+
 export function describeTarget(
-  target: Pick<AdminApiTarget, 'baseUrl' | 'environment' | 'baseUrlOverridden'> & Partial<Pick<AdminApiTarget, 'basicAuth'>>
+  target: Pick<AdminApiTarget, 'baseUrl' | 'environment' | 'baseUrlOverridden'> &
+    Partial<Pick<AdminApiTarget, 'basicAuth' | 'environmentExplicit'>>
 ): string {
-  const source = target.baseUrlOverridden ? `${BASE_URL_VARIABLE}, Token für ${target.environment}` : target.environment;
+  const environment = target.environment === 'production' ? 'PRODUCTION' : target.environment;
+  const defaulted = target.environmentExplicit === false ? ', Default ohne --env' : '';
+  const source = target.baseUrlOverridden ? `${BASE_URL_VARIABLE}, Token für ${environment}` : environment;
   const basicAuth = target.basicAuth ? ', mit Basic-Auth' : '';
-  return `${target.baseUrl} (${source}${basicAuth})`;
+  return `${target.baseUrl} (${source}${defaulted}${basicAuth})`;
 }

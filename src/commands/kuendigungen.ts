@@ -5,7 +5,7 @@
  *   lernplattform kuendigungen list [--status=pending|confirmed|rejected|withdrawn|all] [--page=N] [--per-page=N] [--json]
  *   lernplattform kuendigungen show <id> [--json]
  *   lernplattform kuendigungen confirm <id> [--wichtiger-grund-anerkannt] [--notiz="..."] [--force] [--json]
- *   lernplattform kuendigungen reject <id> --grund="..." [--force] [--json]
+ *   lernplattform kuendigungen reject <id> --unzulaessig=<art> --grund="..." [--force] [--json]
  *   lernplattform kuendigungen refund <id> [--force] [--json]
  *
  * Alle Befehle: [--env=production|staging]
@@ -13,10 +13,18 @@
 
 import { parseCliArgs, getTextData, type ParsedArgs } from '../utils/args';
 import { AdminApiClient, AdminApiError, adminApiErrorPayload } from '../admin/client';
-import { AdminUsageError, describeTarget, resolveAdminApiTarget, type AdminApiTarget } from '../admin/config';
+import {
+  AdminUsageError,
+  describeTarget,
+  requireExplicitEnvironment,
+  resolveAdminApiTarget,
+  type AdminApiTarget,
+} from '../admin/config';
 import {
   CANCELLATION_STATUS_FILTERS,
   ERROR_CODE_HINTS,
+  REJECTION_GROUNDS,
+  parseRejectionGround,
   REAL_MONEY_TEXT,
   buildActionResultLines,
   buildConfirmationPreview,
@@ -31,6 +39,7 @@ import {
   type CancellationRequestDetail,
   type CancellationStatusFilter,
   type PreviewLine,
+  type RejectionGround,
 } from '../admin/cancellation-requests';
 import {
   colorsEnabledFor,
@@ -62,9 +71,12 @@ const ALLOWED_FLAGS: Record<string, string[]> = {
   list: [...COMMON_FLAGS, 'status', 'page', 'per-page'],
   show: [...COMMON_FLAGS],
   confirm: [...COMMON_FLAGS, 'notiz', 'notiz-stdin', 'notiz-base64', 'wichtiger-grund-anerkannt', 'als-widerruf', 'force'],
-  reject: [...COMMON_FLAGS, 'grund', 'grund-stdin', 'grund-base64', 'force'],
+  reject: [...COMMON_FLAGS, 'unzulaessig', 'grund', 'grund-stdin', 'grund-base64', 'force'],
   refund: [...COMMON_FLAGS, 'force'],
 };
+
+/** Befehle, die Daten ändern: nie still gegen production (requireExplicitEnvironment). */
+const WRITE_OPERATIONS = ['confirm', 'reject', 'refund'];
 
 const IMPORTANT_REASON_FLAG = 'wichtiger-grund-anerkannt';
 const TREAT_AS_WITHDRAWAL_FLAG = 'als-widerruf';
@@ -196,18 +208,37 @@ async function confirm(client: AdminApiClient, args: ParsedArgs, io: CommandIo, 
   writeResult(io, args, response, buildActionResultLines(response));
 }
 
+/** --unzulaessig=<art>: Pflicht, eine wirksame Kündigung wird bestätigt, nicht abgelehnt. */
+function parseGround(args: ParsedArgs): RejectionGround {
+  const value = args.flags.unzulaessig;
+  const options = Object.keys(REJECTION_GROUNDS).join(' | ');
+
+  if (value === undefined || value === true) {
+    throw new AdminUsageError(
+      `--unzulaessig=<art> ist Pflicht: ${options}. Eine wirksame Kündigung wird nicht abgelehnt, sondern bestätigt (confirm).`
+    );
+  }
+
+  const ground = parseRejectionGround(String(value));
+  if (!ground) {
+    throw new AdminUsageError(`Unbekannte Art für --unzulaessig: ${String(value)}. Erlaubt: ${options}.`);
+  }
+  return ground;
+}
+
 async function reject(client: AdminApiClient, args: ParsedArgs, io: CommandIo, target: AdminApiTarget): Promise<void> {
   const id = parseId(args);
+  const ground = parseGround(args);
   const reason = readText(args, 'grund', true) as string;
 
   if (!isForce(args)) {
     const { data: detail } = await getCancellationRequest(client, id);
-    const preview = buildRejectionPreview(detail, reason);
+    const preview = buildRejectionPreview(detail, reason, ground);
     writePreview(io, args, target, preview.changesState, preview.lines, detail);
     return;
   }
 
-  const response = await rejectCancellationRequest(client, id, reason);
+  const response = await rejectCancellationRequest(client, id, reason, ground);
   writeResult(io, args, response, buildActionResultLines(response));
 }
 
@@ -305,6 +336,7 @@ export async function executeKuendigungen(argv: string[], io: CommandIo): Promis
   try {
     assertKnownFlags(operation, args);
     const target = resolveAdminApiTarget(args.flags.env, io.env);
+    if (WRITE_OPERATIONS.includes(operation)) requireExplicitEnvironment(target, operation);
     io.err(`Ziel: ${describeTarget(target)}`);
 
     const client = new AdminApiClient({
@@ -347,6 +379,8 @@ ABLAUF: prüfen → confirm → refund
                             Löst KEINE Erstattung aus.
   3) refund <id>            Erstattung über Stripe auszahlen. ECHTES GELD.
   confirm, reject und refund sind VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau.
+  Sie brauchen immer ein ausdrückliches Ziel (--env=production|staging oder $LERNPLATTFORM_ENV),
+  sonst brechen sie ab, auch die Vorschau.
 
 AKTIONEN
   list                 Kündigungsanfragen auflisten (lesend). Default: offene (pending), älteste zuerst
@@ -354,12 +388,16 @@ AKTIONEN
                        (gespeichert und neu berechnet), Erstattung (Berechnung und ausgeführt),
                        Abo-Kündigung, Review, Warnungen (lesend)
   confirm <id>         Anfrage bestätigen. VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau
-  reject <id>          Anfrage ablehnen. VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau
+  reject <id>          Unzulässige Erklärung ablehnen (Duplikat, keine Kündigung, falscher Vertrag,
+                       Widerruf ausgeschlossen). Eine wirksame Kündigung wird bestätigt, nicht
+                       abgelehnt. VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau
   refund <id>          Berechnete Erstattung über Stripe auszahlen. VERÄNDERND, ECHTES GELD, nur nach
                        ausdrücklicher Ansage. Ohne --force nur Vorschau
 
 FLAGS
-  --env=production|staging   Zielumgebung (Default: $LERNPLATTFORM_ENV oder production)
+  --env=production|staging   Zielumgebung. Lesend (list, show): Default $LERNPLATTFORM_ENV, sonst
+                             production, stderr zeigt "Default ohne --env". Verändernd (confirm, reject,
+                             refund): Pflicht, ohne --env und ohne $LERNPLATTFORM_ENV Abbruch (Exit 1)
   --json                     Rohes JSON der API auf stdout statt Tabelle/Text
   list:
     --status=S               pending (Default) | confirmed | rejected | withdrawn | all
@@ -371,10 +409,18 @@ FLAGS
                              nächstmöglichen Termin (Umdeutung, § 140 BGB). Sonst 422.
     --als-widerruf           Ordentliche/außerordentliche Anfrage als Widerruf behandeln: volle Erstattung,
                              Zugang und Abo enden sofort. Nur bei Eingang innerhalb von 14 Tagen nach dem
-                             Kauf (Warnung widerruf-moeglich), nicht zusammen mit --wichtiger-grund-anerkannt.
+                             Kauf (Warnung widerruf-moeglich), nur für Verbraucher (nie Firmenpass),
+                             nicht zusammen mit --wichtiger-grund-anerkannt.
     --notiz="…"              Interne Admin-Notiz (admin_notes, max ${MAX_TEXT_LENGTH} Zeichen)
     --force                  Wirklich ausführen
   reject:
+    --unzulaessig=ART        Pflicht. Warum die Erklärung unzulässig ist:
+                               duplikat                 schon gekündigt oder in Prüfung
+                               keine-erklaerung         Frage, Versehen, zurückgenommen
+                               falscher-vertrag         falscher Pass, kein Vertragspartner
+                               widerruf-ausgeschlossen  nur Widerruf: Frist abgelaufen oder Firmenpass
+                             (die API-Werte duplicate, not_a_declaration, wrong_contract,
+                             withdrawal_not_available gehen auch)
     --grund="…"              Pflicht. Begründung, geht per Mail an den Teilnehmer (max ${MAX_TEXT_LENGTH} Zeichen)
     --force                  Wirklich ausführen
   refund:
@@ -387,11 +433,16 @@ WAS DIE BEFEHLE MIT --force AUSLÖSEN
   confirm --force  → Status "confirmed", Wirksamkeitsdatum wird neu festgelegt (ab Zugang der Erklärung),
                      Zugang endet zum Wirksamkeitsdatum (sofort bei Widerruf/anerkanntem Grund),
                      Stripe-Abo wird zum Wirksamkeitsdatum gekündigt (sofort, wenn es sofort wirkt oder
-                     das Datum erreicht ist; Bündel-Abos nicht), Bestätigungsmail an den echten Teilnehmer.
-                     KEINE Erstattung. Gesperrt (409 paid_amount_unknown), solange das Zahlungsbuch fehlt.
-  reject --force   → Status "rejected", Ablehnungsmail mit --grund an den echten Teilnehmer.
-  refund --force   → Stripe-Refund(s) über die Zahlungen des Passes, neueste zuerst. Echtes Geld, nicht
-                     umkehrbar. Nur für bestätigte Anfragen mit bekanntem Zahlbetrag.
+                     das Datum erreicht ist), Bestätigungsmail an den echten Teilnehmer. KEINE Erstattung.
+                     Bündel-Abo (mehrere Pässe, ein Kauf) = ein Vertrag: der Zugang ALLER Pässe des Bündels
+                     endet zum selben Zeitpunkt (subscription_cancellation.bundle_user_pass_ids).
+                     Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous, user_pass_missing.
+  reject --force   → Status "rejected" mit rejection_ground, Ablehnungsmail mit --grund an den Teilnehmer.
+  refund --force   → Stripe-Refund(s) über die Zahlungen des Vertrags, neueste zuerst, auf das beim Kauf
+                     genutzte Zahlungsmittel. Echtes Geld, nicht umkehrbar. Nur für bestätigte Anfragen
+                     mit bekanntem Zahlbetrag. Direkt in Stripe erstattete Beträge sind schon abgezogen.
+                     Kommt nach der Erstattung noch eine Rate, steht die Anfrage auf partially_refunded
+                     (REST-OFFEN) und refund --force zahlt nur den Rest.
   Ohne --force: nur Vorschau (ein GET), nichts wird verändert, Exit 0.
   Idempotent: bereits bestätigt/abgelehnt/erstattet → already_confirmed/already_rejected/already_refunded,
   keine zweite Mail, keine zweite Auszahlung. Jeder POST schickt einen frischen Idempotency-Key (UUID).
@@ -399,8 +450,11 @@ WAS DIE BEFEHLE MIT --force AUSLÖSEN
 ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
   confirm   200 confirmed | already_confirmed
             409 conflict (anderer Status) | paid_amount_unknown (Zahlungsbuch fehlt, Backfill nötig)
-            422 unprocessable (Flag passt nicht zur Anfrage, Datum nicht berechenbar)
+                | bundle_subscription_ambiguous (Abo bezahlt Pässe eines anderen Kaufs)
+                | user_pass_missing (Pass gelöscht)
+            422 unprocessable (Flag passt nicht zur Anfrage, z. B. Widerruf bei Firmenpass)
   reject    200 rejected | already_rejected       409 conflict
+            422 unprocessable (--unzulaessig passt nicht, z. B. widerruf-ausgeschlossen bei Kündigung)
   refund    200 refunded | already_refunded | nothing_to_refund
             409 not_confirmed | paid_amount_unknown | refund_in_progress | user_pass_missing
             422 unprocessable (keine Erstattung berechenbar)
@@ -410,6 +464,10 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
 WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; VERSALIEN = kritisch)
   ZAHLUNGSBUCH-FEHLT       paid_amount_unknown: Bestätigen gesperrt, Zahlungsbuch fehlt (Backfill:
                            php artisan pass:backfill-payments). Erstatten ebenso
+  ABO-BUENDEL-UNKLAR       bundle_subscription_ambiguous: Abo bezahlt Pässe eines anderen Kaufs,
+                           Bestätigen gesperrt, erst in Stripe klären
+  erstattung-offen         refund_outstanding: bestätigt, Erstattung noch offen (oder Rest nach neuer Rate).
+                           Bei Abos erst nach der letzten Rate vor dem Wirksamkeitsdatum erstatten
   ERSTATTUNG-FEHLGESCHLAGEN refund_failed: letzter refund-Versuch von Stripe abgelehnt
   ABO-KUENDIGUNG-FEHLGESCHLAGEN subscription_cancellation_failed: Stripe-Abo nicht gekündigt → in Stripe kündigen
   ABO-NICHT-IN-STRIPE      subscription_not_found: Abo-ID am Pass, Stripe kennt das Abo nicht
@@ -418,25 +476,28 @@ WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; 
   widerruf-moeglich        withdrawal_possible: Eingang innerhalb 14 Tagen nach Kauf, --als-widerruf möglich
   wichtiger-grund-offen    important_reason_decision_required: außerordentlich, Entscheidung beim confirm
   vertragspreis-fehlt      contract_price_unknown: Geschuldetes mit Katalogpreis gerechnet (Gutschein fehlt)
-  abo-buendel              bundle_subscription: Abo bezahlt mehrere Pässe, wird nicht automatisch gekündigt
+  abo-buendel              bundle_subscription: Bündel = ein Vertrag, confirm beendet Abo und Zugang
+                           aller Pässe des Bündels zum selben Termin
   pass-geloescht           user_pass_missing: Pass gelöscht, Zugang/Abo/Erstattung nicht prüfbar
   datum-vergangen          effective_date_in_past: gespeichertes Wirksamkeitsdatum liegt in der Vergangenheit
   offen>14d                pending_longer_than_14_days: Anfrage wartet länger als 14 Tage
   abo-gekuendigt           subscription_already_canceled: Stripe-Abo hat schon ein Enddatum
   zugang-laenger           access_continues_after_effective_date: Zugang läuft über das Datum hinaus
   abo-ende-abweichend      subscription_end_differs_from_effective_date
-  Spalte "Erstattung" der Liste: — (keine) | läuft | erstattet | FEHLGESCHLAGEN.
+  Spalte "Erstattung" der Liste: — (keine) | läuft | erstattet | REST-OFFEN | FEHLGESCHLAGEN.
   Widerruf: Spalte "Art" zeigt "Erstattung bis TT.MM.JJJJ" (14 Tage nach Eingang, § 357 BGB).
 
 RECHTLICHER RAHMEN (Berechnung macht die Plattform, die CLI zeigt sie nur)
   Ordentliche Kündigung nach § 5 FernUSG: im ersten Halbjahr frühestens zu dessen Ende mit 6 Wochen Frist,
   danach mit 3 Monaten Frist ab Zugang. Außerordentlich ohne anerkannten Grund: Umdeutung (§ 140 BGB).
-  Widerruf: 14 Tage ab Kauf, wirkt sofort, voller Betrag.
+  Widerruf: nur Verbraucher, 14 Tage ab Kauf, Vertrag endet mit Zugang, voller Betrag.
+  Bündel: ein Kauf mehrerer Pässe auf einem Abo gilt als ein Vertrag (Kanzlei-Frage offen).
+  Ablehnen: nur unzulässige Erklärungen; eine Kündigung ist ein Gestaltungsrecht und wird bestätigt.
 
 UMGEBUNG UND TOKEN (getrennt vom Content-Token AIDI_API_TOKEN)
   LERNPLATTFORM_ADMIN_TOKEN          Admin-Token für production (Pflicht für --env=production)
   LERNPLATTFORM_STAGING_ADMIN_TOKEN  Admin-Token für staging   (Pflicht für --env=staging)
-  LERNPLATTFORM_ENV                  Default für --env
+  LERNPLATTFORM_ENV                  Default für --env (zählt als ausdrückliches Ziel)
   LERNPLATTFORM_BASE_URL             Übersteuert die URL (z. B. lokale Instanz), Token nach --env
   LERNPLATTFORM_STAGING_BASIC_AUTH   user:passwort für die nginx-Basic-Auth vor staging.
                                      Dann: Authorization: Basic …, Token in X-API-Authorization
@@ -460,21 +521,21 @@ BEISPIELE
   lernplattform kuendigungen list --status=confirmed          # u. a. offene Erstattungen
   lernplattform kuendigungen show 12
   lernplattform kuendigungen show 12 --json | jq '.data.refund_execution'
-  lernplattform kuendigungen confirm 12                                   # Vorschau (Umdeutung bei außerordentlich)
-  lernplattform kuendigungen confirm 12 --wichtiger-grund-anerkannt       # Vorschau mit sofortiger Wirkung
-  lernplattform kuendigungen confirm 12 --als-widerruf                    # Vorschau als Widerruf
-  lernplattform kuendigungen confirm 12 --notiz="Telefonisch geklärt" --force
-  lernplattform kuendigungen refund 12                                    # Vorschau: Betrag, erstattet, offen
-  lernplattform kuendigungen refund 12 --force                            # ECHTES GELD
-  lernplattform kuendigungen reject 12 --grund="Mindestlaufzeit nicht erreicht"   # Vorschau
+  lernplattform kuendigungen confirm 12 --env=production                  # Vorschau (Umdeutung bei außerordentlich)
+  lernplattform kuendigungen confirm 12 --env=production --wichtiger-grund-anerkannt   # Vorschau, sofortige Wirkung
+  lernplattform kuendigungen confirm 12 --env=production --als-widerruf   # Vorschau als Widerruf
+  lernplattform kuendigungen confirm 12 --env=production --notiz="Telefonisch geklärt" --force
+  lernplattform kuendigungen refund 12 --env=production                   # Vorschau: Betrag, erstattet, offen
+  lernplattform kuendigungen refund 12 --env=production --force           # ECHTES GELD
+  lernplattform kuendigungen reject 12 --env=production --unzulaessig=duplikat --grund="Bereits am 18.09. gekündigt"   # Vorschau
   LERNPLATTFORM_BASE_URL=http://127.0.0.1:8125 lernplattform kuendigungen list
 
 WORKFLOW (für Agenten)
   1) lernplattform kuendigungen list --json 2>/dev/null | jq '.data[] | {id, type, refund_status, warnings: [.warnings[].code]}'
   2) lernplattform kuendigungen show <id>                  # Warnungen, Wirksamkeit und Erstattung lesen
-  3) lernplattform kuendigungen confirm <id> [--wichtiger-grund-anerkannt|--als-widerruf]   # Vorschau zeigen
+  3) lernplattform kuendigungen confirm <id> --env=production [--wichtiger-grund-anerkannt|--als-widerruf]   # Vorschau
   4) Ansage abwarten, dann confirm <id> … --force          # Ergebnis auf ACHTUNG-Zeilen prüfen (Abo)
-  5) lernplattform kuendigungen refund <id>                # Vorschau zeigen, Betrag nennen
-  6) Erst nach ausdrücklicher Freigabe: refund <id> --force
+  5) lernplattform kuendigungen refund <id> --env=production   # Vorschau zeigen, Betrag nennen
+  6) Erst nach ausdrücklicher Freigabe: refund <id> --env=production --force
   Bei ZAHLUNGSBUCH-FEHLT nicht bestätigen: erst Backfill auf dem Server (eigene Ansage), dann erneut prüfen.
 `;

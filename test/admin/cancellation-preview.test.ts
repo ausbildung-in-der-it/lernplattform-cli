@@ -57,16 +57,17 @@ describe('buildConfirmationPreview', () => {
     assert.doesNotMatch(lines.join('\n'), /wird zum/);
   });
 
-  it('warns that a bundle subscription is not canceled automatically', () => {
+  it('no longer claims a bundle subscription stays untouched: it ends at the effective date like any other', () => {
     const detail = cancellationDetail({
       subscription: { stripe_id: 'sub_123', stripe_status: 'active', ends_at: null, is_canceled: false },
+      subscription_cancellation: { status: null, error: null, bundle_user_pass_ids: [8], bundle_ambiguous: false },
       warnings: [{ code: 'bundle_subscription', message: 'Das Stripe-Abo bezahlt mehrere Pässe.' }],
     });
 
-    const lines = buildConfirmationPreview(detail, { today: TODAY }).lines;
+    const lines = texts(buildConfirmationPreview(detail, { today: TODAY }).lines);
 
-    assert.ok(lines.some((line) => line.kind === 'warning' && /NICHT automatisch gekündigt/.test(line.text)));
-    assert.doesNotMatch(texts(lines).join('\n'), /wird zum 23\.12\.2026 gekündigt/);
+    assert.doesNotMatch(lines.join('\n'), /NICHT automatisch gekündigt/);
+    assert.ok(lines.includes('Stripe-Abo-Ende: sub_123 wird zum 23.12.2026 gekündigt (cancel_at, für das ganze Bündel).'));
   });
 
   it('shows the reinterpretation as ordinary for an extraordinary cancellation without the flag', () => {
@@ -138,7 +139,7 @@ describe('buildConfirmationPreview', () => {
 
     const lines = texts(buildConfirmationPreview(detail, { today: TODAY }).lines);
 
-    assert.match(lines[1], /^Widerruf \(§ 4 FernUSG, § 355 BGB\): Der Vertrag endet sofort mit Zugang am 20\.09\.2026/);
+    assert.match(lines[1], /^Widerruf \(§ 355 BGB\): Der Vertrag endet mit Zugang am 20\.09\.2026, Zugang und Abo mit der Bestätigung/);
     assert.ok(lines.includes('Zugang endet sofort mit der Bestätigung (Pass-Status canceled).'));
     assert.match(lines.join('\n'), /Berechnete Erstattung: 588,00 € \(.*Widerruf: voller Betrag\)/);
   });
@@ -153,7 +154,7 @@ describe('buildConfirmationPreview', () => {
     const lines = texts(preview.lines);
 
     assert.equal(preview.changesState, true);
-    assert.ok(lines.includes('Wird als Widerruf behandelt: volle Erstattung 588,00 €, Zugang und Abo enden sofort, Erstattung fällig bis 29.09.2026 (§ 4 FernUSG, §§ 355, 357 BGB).'));
+    assert.ok(lines.includes('Wird als Widerruf behandelt: volle Erstattung 588,00 €, Vertrag endet mit Zugang am 15.09.2026, Zugang und Abo enden mit der Bestätigung, Erstattung fällig bis 29.09.2026 (§§ 355, 357 BGB).'));
     assert.ok(lines.includes('Zugang endet sofort mit der Bestätigung (Pass-Status canceled).'));
     assert.match(lines.join('\n'), /Erstattung als Widerruf: voller gezahlter Betrag 588,00 €/);
     assert.doesNotMatch(lines.join('\n'), /withdrawal_possible/);
@@ -190,7 +191,7 @@ describe('buildConfirmationPreview', () => {
     assert.equal(buildConfirmationPreview(detail, { importantReasonAccepted: true, today: TODAY }).changesState, true);
   });
 
-  it('handles a deleted pass without crashing', () => {
+  it('blocks a deleted pass instead of keeping the stored date (server: 409 user_pass_missing)', () => {
     const detail = cancellationDetail({
       pass: null,
       payment_mode: null,
@@ -201,9 +202,8 @@ describe('buildConfirmationPreview', () => {
 
     const preview = buildConfirmationPreview(detail, { today: TODAY });
 
-    assert.equal(preview.changesState, true);
-    assert.match(texts(preview.lines).join('\n'), /Pass gelöscht: Das gespeicherte Wirksamkeitsdatum 01\.09\.2026 bleibt/);
-    assert.match(texts(preview.lines).join('\n'), /Keine Erstattung berechnet: Der Pass zu dieser Anfrage ist gelöscht/);
+    assert.equal(preview.changesState, false);
+    assert.match(texts(preview.lines).join('\n'), /Pass ist gelöscht.*409 user_pass_missing/);
   });
 
   it('says that --force changes nothing when already confirmed and points at the open refund', () => {
@@ -248,7 +248,7 @@ describe('buildRefundPreview', () => {
 
     assert.equal(preview.changesState, true);
     assert.deepEqual(preview.lines[0], { kind: 'blocked', text: 'ECHTES GELD: refund --force zahlt über Stripe an den Teilnehmer aus. Nicht umkehrbar.' });
-    assert.ok(lines.includes('Kündigung #12: 165,81 € werden an max@example.com erstattet.'));
+    assert.ok(lines.includes('Kündigung #12: 165,81 € werden über Stripe auf das beim Kauf genutzte Zahlungsmittel erstattet (Teilnehmer max@example.com).'));
     assert.ok(lines.includes('Betrag laut Berechnung: 265,81 € (bezahlt 588,00 €, geschuldet 322,19 €)'));
     assert.ok(lines.includes('Bereits erstattet: 100,00 € (Stripe-Refunds: re_1)'));
     assert.ok(lines.includes('Offen, wird jetzt erstattet: 165,81 €'));
@@ -331,15 +331,23 @@ describe('buildRefundResultLines', () => {
 });
 
 describe('buildRejectionPreview', () => {
-  it('describes the rejection mail with the reason for a pending request', () => {
-    const preview = buildRejectionPreview(cancellationDetail({ warnings: [] }), 'Mindestlaufzeit nicht erreicht');
+  it('says that a valid cancellation is confirmed, names the ground and the mail for a pending request', () => {
+    const preview = buildRejectionPreview(cancellationDetail({ warnings: [] }), 'Bereits am 18.09. gekündigt', 'duplicate');
 
     assert.equal(preview.changesState, true);
     assert.deepEqual(texts(preview.lines), [
-      'Kündigung #12 wird abgelehnt.',
-      'Ablehnungsmail an max@example.com mit Begründung: „Mindestlaufzeit nicht erreicht“',
+      'Eine wirksame ordentliche Kündigung wird bestätigt, nicht abgelehnt; eine außerordentliche ohne wichtigen Grund ebenso (Umdeutung). Ablehnen nur bei einer unzulässigen Erklärung.',
+      'Kündigung #12 (Ordentliche Kündigung) wird als unzulässig abgelehnt: Doppelte Erklärung zu einem Vertrag, der schon gekündigt ist oder geprüft wird (duplicate).',
+      'Ablehnungsmail an max@example.com mit Begründung: „Bereits am 18.09. gekündigt“',
       'Zum Ausführen: denselben Befehl mit --force wiederholen.',
     ]);
+  });
+
+  it('blocks withdrawal_not_available for an ordinary cancellation (server: 422)', () => {
+    const preview = buildRejectionPreview(cancellationDetail({ warnings: [] }), 'Frist', 'withdrawal_not_available');
+
+    assert.equal(preview.changesState, false);
+    assert.match(texts(preview.lines)[0], /passt nur zu einem Widerruf.*422 unprocessable/);
   });
 
   it('says that --force changes nothing when already rejected and shows the stored reason', () => {
@@ -349,7 +357,7 @@ describe('buildRejectionPreview', () => {
       review: { reviewed_at: null, reviewed_by: null, admin_notes: null, rejection_reason: 'Alter Grund' },
     });
 
-    const lines = texts(buildRejectionPreview(detail, 'Neuer Grund').lines);
+    const lines = texts(buildRejectionPreview(detail, 'Neuer Grund', 'duplicate').lines);
 
     assert.equal(lines[0], 'Kündigung #12 ist bereits abgelehnt.');
     assert.ok(lines.includes('Gespeicherte Begründung: Alter Grund'));
@@ -357,10 +365,87 @@ describe('buildRejectionPreview', () => {
   });
 
   it('announces a 409 for a confirmed request', () => {
-    const preview = buildRejectionPreview(cancellationDetail({ status: 'confirmed', status_label: 'Bestätigt' }), 'x');
+    const preview = buildRejectionPreview(cancellationDetail({ status: 'confirmed', status_label: 'Bestätigt' }), 'x', 'duplicate');
 
     assert.equal(preview.changesState, false);
     assert.match(texts(preview.lines).join('\n'), /409/);
+  });
+});
+
+describe('review fixes (AIDI-749)', () => {
+  const bundleSubscription = { stripe_id: 'sub_bundle', stripe_status: 'active', ends_at: null, is_canceled: false };
+
+  it('confirm preview of a bundle ends the subscription and the access of all passes at the same date', () => {
+    const detail = cancellationDetail({
+      payment_mode: 'subscription',
+      subscription: bundleSubscription,
+      subscription_cancellation: { status: null, error: null, bundle_user_pass_ids: [1955], bundle_ambiguous: false },
+      warnings: [{ code: 'bundle_subscription', message: 'Ein Bündel gilt als ein Vertrag.' }],
+    });
+
+    const preview = buildConfirmationPreview(detail, { today: TODAY });
+    const lines = texts(preview.lines);
+
+    assert.equal(preview.changesState, true);
+    assert.ok(lines.includes('Bündel (ein Vertrag): Zugang der Pässe #1955 endet ebenfalls zum 23.12.2026, die Mail nennt sie.'));
+    assert.ok(lines.includes('Stripe-Abo-Ende: sub_bundle wird zum 23.12.2026 gekündigt (cancel_at, für das ganze Bündel).'));
+    assert.doesNotMatch(lines.join('\n'), /NICHT automatisch gekündigt|bundle_subscription\]/);
+  });
+
+  it('confirm preview blocks an ambiguous bundle (server: 409 bundle_subscription_ambiguous)', () => {
+    const detail = cancellationDetail({
+      subscription: bundleSubscription,
+      subscription_cancellation: { status: null, error: null, bundle_user_pass_ids: [2001], bundle_ambiguous: true },
+      warnings: [{ code: 'bundle_subscription_ambiguous', message: '…' }],
+    });
+
+    const preview = buildConfirmationPreview(detail, { today: TODAY });
+
+    assert.equal(preview.changesState, false);
+    assert.match(texts(preview.lines)[0], /Bestätigen gesperrt.*\(#2001\).*409 bundle_subscription_ambiguous/);
+  });
+
+  it('confirm preview refuses --als-widerruf for a company pass (server: 422)', () => {
+    const detail = cancellationDetail({
+      type: 'ausserordentlich',
+      type_label: 'Außerordentliche Kündigung',
+      pass: { ...(cancellationDetail().pass as NonNullable<ReturnType<typeof cancellationDetail>['pass']>), is_b2b: true, company_name: 'Muster GmbH' },
+      warnings: [{ code: 'withdrawal_possible', message: '…' }],
+    });
+
+    const preview = buildConfirmationPreview(detail, { treatAsWithdrawal: true, today: TODAY });
+
+    assert.equal(preview.changesState, false);
+    assert.match(texts(preview.lines)[0], /Firmenpass: Ein Widerrufsrecht haben nur Verbraucher.*422/);
+  });
+
+  it('confirm preview blocks a deleted pass (server: 409 user_pass_missing)', () => {
+    const preview = buildConfirmationPreview(cancellationDetail({ pass: null, warnings: [] }), { today: TODAY });
+
+    assert.equal(preview.changesState, false);
+    assert.match(texts(preview.lines)[0], /Pass ist gelöscht.*409 user_pass_missing/);
+  });
+
+  it('refund preview pays only the rest of a partially refunded request and names the payment method, not the mail', () => {
+    const detail = confirmedDetail({
+      refund_execution: executionWith({
+        status: 'partially_refunded',
+        status_label: 'Teilweise erstattet, Rest offen',
+        refunded_cents: 26_581,
+        refunded_formatted: '265,81 €',
+        outstanding_cents: 3_725,
+        stripe_refund_ids: ['re_1'],
+        refunded_at: '2026-09-23T10:00:00+02:00',
+      }),
+    });
+
+    const preview = buildRefundPreview(detail);
+    const lines = texts(preview.lines);
+
+    assert.equal(preview.changesState, true);
+    assert.ok(lines.includes('Kündigung #12: 37,25 € werden über Stripe auf das beim Kauf genutzte Zahlungsmittel erstattet (Teilnehmer max@example.com).'));
+    assert.ok(lines.some((line) => /noch eine Zahlung eingegangen; --force zahlt nur den Rest/.test(line)));
+    assert.doesNotMatch(lines.join('\n'), /werden an max@example\.com erstattet/);
   });
 });
 

@@ -5797,7 +5797,9 @@ function parseEnvironment(value) {
   );
 }
 function resolveAdminApiTarget(envFlag, env = process.env) {
-  const environment = parseEnvironment(envFlag ?? env[ENVIRONMENT_VARIABLE]);
+  const requested = envFlag ?? env[ENVIRONMENT_VARIABLE];
+  const environment = parseEnvironment(requested);
+  const environmentExplicit = requested !== void 0 && requested !== null && String(requested).trim() !== "";
   const overrideUrl = env[BASE_URL_VARIABLE]?.trim();
   const baseUrl = (overrideUrl || DEFAULT_BASE_URLS[environment]).replace(/\/+$/, "");
   const tokenVariable = TOKEN_VARIABLES[environment];
@@ -5814,6 +5816,7 @@ function resolveAdminApiTarget(envFlag, env = process.env) {
   }
   return {
     environment,
+    environmentExplicit,
     baseUrl,
     baseUrlOverridden: Boolean(overrideUrl),
     token,
@@ -5822,15 +5825,40 @@ function resolveAdminApiTarget(envFlag, env = process.env) {
     basicAuthVariable
   };
 }
+function requireExplicitEnvironment(target, operation) {
+  if (target.environmentExplicit) return;
+  throw new AdminUsageError(
+    `${operation} ver\xE4ndert Daten und braucht ein ausdr\xFCckliches Ziel: --env=production oder --env=staging (alternativ ${ENVIRONMENT_VARIABLE} setzen). Ohne Angabe wird nichts ausgef\xFChrt, auch keine Vorschau.`
+  );
+}
 function describeTarget(target) {
-  const source = target.baseUrlOverridden ? `${BASE_URL_VARIABLE}, Token f\xFCr ${target.environment}` : target.environment;
+  const environment = target.environment === "production" ? "PRODUCTION" : target.environment;
+  const defaulted = target.environmentExplicit === false ? ", Default ohne --env" : "";
+  const source = target.baseUrlOverridden ? `${BASE_URL_VARIABLE}, Token f\xFCr ${environment}` : environment;
   const basicAuth = target.basicAuth ? ", mit Basic-Auth" : "";
-  return `${target.baseUrl} (${source}${basicAuth})`;
+  return `${target.baseUrl} (${source}${defaulted}${basicAuth})`;
 }
 
 // src/admin/cancellation-requests.ts
 var CANCELLATION_STATUSES = ["pending", "confirmed", "rejected", "withdrawn"];
 var CANCELLATION_STATUS_FILTERS = [...CANCELLATION_STATUSES, "all"];
+var REJECTION_GROUNDS = {
+  duplikat: "duplicate",
+  "keine-erklaerung": "not_a_declaration",
+  "falscher-vertrag": "wrong_contract",
+  "widerruf-ausgeschlossen": "withdrawal_not_available"
+};
+var REJECTION_GROUND_LABELS = {
+  duplicate: "Doppelte Erkl\xE4rung zu einem Vertrag, der schon gek\xFCndigt ist oder gepr\xFCft wird",
+  not_a_declaration: "Keine K\xFCndigungserkl\xE4rung (Frage, Versehen, zur\xFCckgenommen)",
+  wrong_contract: "Betrifft keinen Vertrag des Absenders (falscher Pass, kein Vertragspartner)",
+  withdrawal_not_available: "Widerruf ausgeschlossen: Frist abgelaufen oder kein Verbrauchervertrag"
+};
+function parseRejectionGround(value) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized in REJECTION_GROUNDS) return REJECTION_GROUNDS[normalized];
+  return Object.values(REJECTION_GROUNDS).includes(normalized) ? normalized : null;
+}
 var WARNING = {
   effectiveDateInPast: "effective_date_in_past",
   pendingLongerThan14Days: "pending_longer_than_14_days",
@@ -5845,6 +5873,8 @@ var WARNING = {
   withdrawalRefundDue: "withdrawal_refund_due",
   importantReasonDecisionRequired: "important_reason_decision_required",
   bundleSubscription: "bundle_subscription",
+  bundleSubscriptionAmbiguous: "bundle_subscription_ambiguous",
+  refundOutstanding: "refund_outstanding",
   subscriptionCancellationFailed: "subscription_cancellation_failed",
   refundFailed: "refund_failed",
   withdrawalPossible: "withdrawal_possible"
@@ -5855,7 +5885,8 @@ var CRITICAL_WARNINGS = [
   WARNING.subscriptionCancellationFailed,
   WARNING.subscriptionNotFound,
   WARNING.refundFailed,
-  WARNING.paidAmountUnknown
+  WARNING.paidAmountUnknown,
+  WARNING.bundleSubscriptionAmbiguous
 ];
 var LEDGER_MISSING_TEXT = "Best\xE4tigen gesperrt, Zahlungsbuch fehlt (Backfill)";
 var BASE_PATH = "/cancellation-requests";
@@ -5878,10 +5909,10 @@ async function confirmCancellationRequest(client, id, options = {}) {
     idempotencyKey: options.idempotencyKey
   });
 }
-async function rejectCancellationRequest(client, id, rejectionReason, options = {}) {
+async function rejectCancellationRequest(client, id, rejectionReason, rejectionGround, options = {}) {
   return client.post(
     `${BASE_PATH}/${id}/rejection`,
-    { rejection_reason: rejectionReason },
+    { rejection_ground: rejectionGround, rejection_reason: rejectionReason },
     { idempotencyKey: options.idempotencyKey }
   );
 }
@@ -5933,6 +5964,8 @@ var SHORT_WARNING_LABELS = {
   [WARNING.withdrawalRefundDue]: "widerruf-erstatten",
   [WARNING.importantReasonDecisionRequired]: "wichtiger-grund-offen",
   [WARNING.bundleSubscription]: "abo-buendel",
+  [WARNING.bundleSubscriptionAmbiguous]: "ABO-BUENDEL-UNKLAR",
+  [WARNING.refundOutstanding]: "erstattung-offen",
   [WARNING.subscriptionCancellationFailed]: "ABO-KUENDIGUNG-FEHLGESCHLAGEN",
   [WARNING.refundFailed]: "ERSTATTUNG-FEHLGESCHLAGEN",
   [WARNING.withdrawalPossible]: "widerruf-moeglich"
@@ -5953,6 +5986,7 @@ var SHORT_REFUND_STATUS_LABELS = {
   none: DASH,
   pending: "l\xE4uft",
   refunded: "erstattet",
+  partially_refunded: "REST-OFFEN",
   failed: "FEHLGESCHLAGEN"
 };
 var SUBSCRIPTION_CANCELLATION_LABELS = {
@@ -5961,7 +5995,7 @@ var SUBSCRIPTION_CANCELLATION_LABELS = {
   canceled_immediately: "sofort gek\xFCndigt",
   already_ended: "war bereits beendet",
   not_found: "in Stripe nicht gefunden, nichts gek\xFCndigt",
-  bundle_skipped: "nicht gek\xFCndigt: Abo bezahlt mehrere P\xE4sse, in Stripe kl\xE4ren",
+  bundle_skipped: "nicht gek\xFCndigt (alte B\xFCndel-Regel): Abo bezahlt mehrere P\xE4sse, in Stripe pr\xFCfen",
   failed: "FEHLGESCHLAGEN, in Stripe k\xFCndigen"
 };
 function subscriptionCancellationLabel(status) {
@@ -6011,7 +6045,7 @@ function effectiveOutcome(detail, decision) {
       lines: [
         {
           kind: "action",
-          text: `Wird als Widerruf behandelt: ${fullAmount}, Zugang und Abo enden sofort, Erstattung f\xE4llig bis ${formatGermanDate(due)} (\xA7 4 FernUSG, \xA7\xA7 355, 357 BGB).`
+          text: `Wird als Widerruf behandelt: ${fullAmount}, Vertrag endet mit Zugang am ${received}, Zugang und Abo enden mit der Best\xE4tigung, Erstattung f\xE4llig bis ${formatGermanDate(due)} (\xA7\xA7 355, 357 BGB).`
         }
       ]
     };
@@ -6023,7 +6057,7 @@ function effectiveOutcome(detail, decision) {
       lines: [
         {
           kind: "action",
-          text: `Widerruf (\xA7 4 FernUSG, \xA7 355 BGB): Der Vertrag endet sofort mit Zugang am ${received}, der gezahlte Betrag ist vollst\xE4ndig zu erstatten.`
+          text: `Widerruf (\xA7 355 BGB): Der Vertrag endet mit Zugang am ${received}, Zugang und Abo mit der Best\xE4tigung, der gezahlte Betrag ist vollst\xE4ndig zu erstatten.`
         }
       ]
     };
@@ -6036,18 +6070,6 @@ function effectiveOutcome(detail, decision) {
         {
           kind: "action",
           text: `Wichtiger Grund wird anerkannt (\xA7 314 BGB): sofortige Wirkung, Wirksamkeitsdatum = Zugang am ${received}.`
-        }
-      ]
-    };
-  }
-  if (!detail.pass) {
-    return {
-      date: stored,
-      immediate: false,
-      lines: [
-        {
-          kind: "warning",
-          text: `Pass gel\xF6scht: Das gespeicherte Wirksamkeitsdatum ${formatGermanDate(stored)} bleibt, Zugang, Abo und Erstattung lassen sich nicht pr\xFCfen.`
         }
       ]
     };
@@ -6089,14 +6111,17 @@ function accessLine(detail, outcome) {
   }
   return { kind: "action", text: `Zugangsende: ${formatGermanDate(outcome.date)} 23:59 (bisher g\xFCltig ${validUntil ? `bis ${formatGermanDate(validUntil)}` : "unbegrenzt"}).` };
 }
+function bundleLine(detail, outcome) {
+  const ids = detail.subscription_cancellation?.bundle_user_pass_ids ?? [];
+  if (ids.length === 0) return null;
+  const when = outcome.immediate ? "mit der Best\xE4tigung" : `zum ${formatGermanDate(outcome.date)}`;
+  return {
+    kind: "action",
+    text: `B\xFCndel (ein Vertrag): Zugang der P\xE4sse ${ids.map((id) => `#${id}`).join(", ")} endet ebenfalls ${when}, die Mail nennt sie.`
+  };
+}
 function subscriptionLine(detail, outcome, today) {
   const { subscription } = detail;
-  if (hasWarning(detail.warnings, WARNING.bundleSubscription)) {
-    return {
-      kind: "warning",
-      text: "Stripe-Abo bezahlt mehrere P\xE4sse (B\xFCndel/Firmenlizenzen) und wird NICHT automatisch gek\xFCndigt. In Stripe kl\xE4ren."
-    };
-  }
   if (!subscription) {
     return detail.payment_mode === "subscription" ? { kind: "note", text: "Stripe-Abo: keine lokale Abo-Zeile. Die Plattform sucht das Abo \xFCber die Abo-ID am Pass und k\xFCndigt es dort." } : null;
   }
@@ -6107,7 +6132,8 @@ function subscriptionLine(detail, outcome, today) {
   if (outcome.immediate || outcome.date && outcome.date.slice(0, 10) <= today) {
     return { kind: "action", text: `Stripe-Abo ${id} wird sofort gek\xFCndigt (ohne anteilige Gutschrift).` };
   }
-  return { kind: "action", text: `Stripe-Abo-Ende: ${id} wird zum ${formatGermanDate(outcome.date)} gek\xFCndigt (cancel_at).` };
+  const bundle = (detail.subscription_cancellation?.bundle_user_pass_ids ?? []).length > 0 ? ", f\xFCr das ganze B\xFCndel" : "";
+  return { kind: "action", text: `Stripe-Abo-Ende: ${id} wird zum ${formatGermanDate(outcome.date)} gek\xFCndigt (cancel_at${bundle}).` };
 }
 function confirmRefundLine(detail, decision) {
   const { refund: refund2 } = detail;
@@ -6140,6 +6166,9 @@ function unprocessableDecision(detail, options) {
   }
   if (options.treatAsWithdrawal && detail.type === "widerruf") {
     return `${label} ist bereits ein Widerruf, --als-widerruf ist nicht n\xF6tig.`;
+  }
+  if (options.treatAsWithdrawal && detail.pass?.is_b2b) {
+    return `${label} betrifft einen Firmenpass: Ein Widerrufsrecht haben nur Verbraucher (\xA7\xA7 312g, 355 BGB), --als-widerruf geht nicht.`;
   }
   if (options.treatAsWithdrawal && !hasWarning(detail.warnings, WARNING.withdrawalPossible)) {
     return `--als-widerruf geht nur, wenn die Anfrage innerhalb von 14 Tagen nach dem Kauf einging (Warnung withdrawal_possible fehlt bei ${label}).`;
@@ -6182,6 +6211,31 @@ function buildConfirmationPreview(detail, options = {}) {
       ]
     };
   }
+  if (!detail.pass) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `${label}: Der Pass ist gel\xF6scht, Wirksamkeitsdatum und Erstattung lassen sich nicht berechnen. Ein Aufruf mit --force wird mit 409 user_pass_missing abgelehnt. Pass wiederherstellen oder als unzul\xE4ssig ablehnen (reject --unzulaessig=falscher-vertrag).`
+        },
+        ...warningLines(detail.warnings, [WARNING.userPassMissing])
+      ]
+    };
+  }
+  if (detail.subscription_cancellation?.bundle_ambiguous || hasWarning(detail.warnings, WARNING.bundleSubscriptionAmbiguous)) {
+    const ids = (detail.subscription_cancellation?.bundle_user_pass_ids ?? []).map((id) => `#${id}`).join(", ");
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `Best\xE4tigen gesperrt: Das Stripe-Abo bezahlt auch P\xE4sse aus einem anderen Kauf${ids ? ` (${ids})` : ""}, welcher Vertrag endet, ist nicht eindeutig. Erst in Stripe kl\xE4ren. Ein Aufruf mit --force wird mit 409 bundle_subscription_ambiguous abgelehnt.`
+        },
+        ...warningLines(detail.warnings, [WARNING.bundleSubscriptionAmbiguous])
+      ]
+    };
+  }
   if (isLedgerMissing(detail)) {
     return {
       changesState: false,
@@ -6206,6 +6260,8 @@ function buildConfirmationPreview(detail, options = {}) {
   ];
   const access = accessLine(detail, outcome);
   if (access) lines.push(access);
+  const bundle = bundleLine(detail, outcome);
+  if (bundle) lines.push(bundle);
   const subscription = subscriptionLine(detail, outcome, today);
   if (subscription) lines.push(subscription);
   lines.push(
@@ -6215,13 +6271,17 @@ function buildConfirmationPreview(detail, options = {}) {
   if (options.adminNotes) {
     lines.push({ kind: "note", text: `Interne Notiz: ${options.adminNotes}` });
   }
-  const decided = [WARNING.importantReasonDecisionRequired, ...treatAsWithdrawal ? [WARNING.withdrawalPossible] : []];
+  const decided = [
+    WARNING.importantReasonDecisionRequired,
+    WARNING.bundleSubscription,
+    ...treatAsWithdrawal ? [WARNING.withdrawalPossible] : []
+  ];
   lines.push(...warningLines(detail.warnings, decided), EXECUTE_HINT);
   return { changesState: true, lines };
 }
 function refundReminder(detail) {
   const outstanding = detail.refund_execution?.outstanding_cents;
-  if (detail.status !== "confirmed" || !outstanding || outstanding <= 0 || detail.refund_execution.status === "refunded") {
+  if (detail.status !== "confirmed" || !outstanding || outstanding <= 0) {
     return [];
   }
   return [
@@ -6231,7 +6291,8 @@ function refundReminder(detail) {
     }
   ];
 }
-function buildRejectionPreview(detail, rejectionReason) {
+var VALID_CANCELLATION_TEXT = "Eine wirksame ordentliche K\xFCndigung wird best\xE4tigt, nicht abgelehnt; eine au\xDFerordentliche ohne wichtigen Grund ebenso (Umdeutung). Ablehnen nur bei einer unzul\xE4ssigen Erkl\xE4rung.";
+function buildRejectionPreview(detail, rejectionReason, ground) {
   const label = `K\xFCndigung #${detail.id}`;
   if (detail.status === "rejected") {
     const storedReason = detail.review.rejection_reason ? [{ kind: "note", text: `Gespeicherte Begr\xFCndung: ${detail.review.rejection_reason}` }] : [];
@@ -6255,10 +6316,23 @@ function buildRejectionPreview(detail, rejectionReason) {
       ]
     };
   }
+  if (ground === "withdrawal_not_available" && detail.type !== "widerruf") {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `--unzulaessig=widerruf-ausgeschlossen passt nur zu einem Widerruf, ${label} ist \u201E${detail.type_label}\u201C. ${VALID_CANCELLATION_TEXT} Ein Aufruf mit --force wird mit 422 unprocessable abgelehnt.`
+        },
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
   return {
     changesState: true,
     lines: [
-      { kind: "action", text: `${label} wird abgelehnt.` },
+      { kind: "warning", text: VALID_CANCELLATION_TEXT },
+      { kind: "action", text: `${label} (${typeText(detail)}) wird als unzul\xE4ssig abgelehnt: ${REJECTION_GROUND_LABELS[ground]} (${ground}).` },
       { kind: "action", text: `Ablehnungsmail an ${detail.participant.email} mit Begr\xFCndung: \u201E${rejectionReason}\u201C` },
       ...warningLines(detail.warnings),
       EXECUTE_HINT
@@ -6310,7 +6384,7 @@ function buildRefundPreview(detail) {
       ]
     };
   }
-  if (execution.status === "refunded") {
+  if (execution.status === "refunded" && (execution.outstanding_cents ?? 0) <= 0) {
     return {
       changesState: false,
       lines: [
@@ -6351,7 +6425,10 @@ function buildRefundPreview(detail) {
   }
   const lines = [
     { kind: "blocked", text: REAL_MONEY_TEXT },
-    { kind: "action", text: `${label}: ${formatEuroCents(outstanding)} werden an ${detail.participant.email} erstattet.` },
+    {
+      kind: "action",
+      text: `${label}: ${formatEuroCents(outstanding)} werden \xFCber Stripe auf das beim Kauf genutzte Zahlungsmittel erstattet (Teilnehmer ${detail.participant.email}).`
+    },
     ...refundAmountLines(detail, refund2),
     { kind: "action", text: `Offen, wird jetzt erstattet: ${formatEuroCents(outstanding)}` },
     {
@@ -6359,6 +6436,12 @@ function buildRefundPreview(detail) {
       text: `Stripe-Zahlungen: verteilt auf die Zahlungen des Passes (UserPass #${detail.pass.user_pass_id}) im Zahlungsbuch, neueste zuerst, je h\xF6chstens der noch nicht erstattete Anteil. Die API nennt die Zahlungen nicht einzeln; in Stripe tragen die Refunds die Metadaten cancellation_request_id=${detail.id}.`
     }
   ];
+  if (execution.status === "partially_refunded") {
+    lines.push({
+      kind: "warning",
+      text: `Nach der Erstattung vom ${formatGermanDateTime(execution.refunded_at)} ist noch eine Zahlung eingegangen; --force zahlt nur den Rest, bereits Erstattetes nicht doppelt.`
+    });
+  }
   if (execution.status === "failed") {
     lines.push({
       kind: "warning",
@@ -6371,7 +6454,7 @@ function buildRefundPreview(detail) {
       text: "Eine Erstattung l\xE4uft bereits. Ein Aufruf mit --force wird mit 409 refund_in_progress abgelehnt, solange der Lauf j\xFCnger als 10 Minuten ist."
     });
   }
-  lines.push(...warningLines(detail.warnings, [WARNING.refundFailed]), {
+  lines.push(...warningLines(detail.warnings, [WARNING.refundFailed, WARNING.refundOutstanding]), {
     kind: "hint",
     text: "Zum Ausf\xFChren: denselben Befehl mit --force wiederholen. Nur nach ausdr\xFCcklicher Freigabe, es flie\xDFt echtes Geld."
   });
@@ -6450,6 +6533,13 @@ function buildActionResultLines(response) {
     const error = detail.subscription_cancellation.error ? ` (${detail.subscription_cancellation.error})` : "";
     lines.push({ kind: "note", text: `Abo-K\xFCndigung: ${subscriptionCancellationLabel(detail.subscription_cancellation.status)}${error}` });
   }
+  const bundleIds = detail.status === "confirmed" ? detail.subscription_cancellation?.bundle_user_pass_ids ?? [] : [];
+  if (bundleIds.length > 0) {
+    lines.push({ kind: "note", text: `B\xFCndel (ein Vertrag): Zugang der P\xE4sse ${bundleIds.map((id) => `#${id}`).join(", ")} endet mit.` });
+  }
+  if (detail.status === "rejected" && detail.review.rejection_ground) {
+    lines.push({ kind: "note", text: `Unzul\xE4ssig, weil: ${REJECTION_GROUND_LABELS[detail.review.rejection_ground] ?? detail.review.rejection_ground}` });
+  }
   const alertCodes = Object.keys(RESULT_ALERTS);
   for (const warning of detail.warnings.filter((item) => alertCodes.includes(item.code))) {
     lines.push({ kind: "blocked", text: `${RESULT_ALERTS[warning.code](detail)} [${warning.code}] ${warning.message}` });
@@ -6459,11 +6549,12 @@ function buildActionResultLines(response) {
 }
 var ERROR_CODE_HINTS = {
   conflict: "Die Anfrage ist schon anders bearbeitet. Status mit show <id> pr\xFCfen.",
-  unprocessable: "Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht au\xDFerordentlicher K\xFCndigung, --als-widerruf au\xDFerhalb der 14 Tage nach Kauf, beide Flags zusammen oder keine Erstattung berechenbar.",
+  unprocessable: "Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht au\xDFerordentlicher K\xFCndigung, --als-widerruf au\xDFerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer K\xFCndigung oder einem fristgerechten Widerruf, oder keine Erstattung berechenbar.",
+  bundle_subscription_ambiguous: "Das Stripe-Abo bezahlt auch P\xE4sse aus einem anderen Kauf. Erst in Stripe kl\xE4ren, welcher Vertrag endet, dann erneut best\xE4tigen.",
   paid_amount_unknown: `${LEDGER_MISSING_TEXT}: auf dem Server php artisan pass:backfill-payments, dann erneut.`,
   not_confirmed: "Erst best\xE4tigen (confirm <id>), dann erstatten.",
   refund_in_progress: "Es l\xE4uft bereits eine Erstattung. Nach 10 Minuten erneut versuchen und vorher mit show <id> den Stand pr\xFCfen.",
-  user_pass_missing: "Der Pass ist gel\xF6scht, die Erstattung l\xE4sst sich nicht berechnen. Manuell in Stripe kl\xE4ren.",
+  user_pass_missing: "Der Pass ist gel\xF6scht: Best\xE4tigen und Erstatten lassen sich nicht berechnen. Pass wiederherstellen oder die Erkl\xE4rung als unzul\xE4ssig ablehnen (reject --unzulaessig=falscher-vertrag), Geld manuell in Stripe kl\xE4ren.",
   refund_failed: "Stripe hat die Erstattung abgelehnt. Bereits erstattete Anteile sind gebucht; Ursache in Stripe pr\xFCfen, dann refund <id> --force erneut (zahlt nicht doppelt)."
 };
 
@@ -6541,6 +6632,7 @@ function refundStatusText(status, c) {
   if (status === "failed") return c.red(c.bold(label));
   if (status === "refunded") return c.green(label);
   if (status === "pending") return c.yellow(label);
+  if (status === "partially_refunded") return c.yellow(c.bold(label));
   return c.dim(label);
 }
 function renderCancellationList(response, c) {
@@ -6643,8 +6735,9 @@ function refundExecutionSection(detail, c) {
   const execution = detail.refund_execution;
   if (!execution) return section("Erstattung ausgef\xFChrt", c.dim("  keine Angabe"), c);
   const statusLabel = `${execution.status_label} (${execution.status})`;
+  const statusText2 = execution.status === "failed" ? c.red(c.bold(statusLabel)) : execution.status === "partially_refunded" ? c.yellow(c.bold(statusLabel)) : statusLabel;
   const pairs = [
-    ["Status", execution.status === "failed" ? c.red(c.bold(statusLabel)) : statusLabel],
+    ["Status", statusText2],
     ["Erstattet", execution.refunded_formatted],
     ["Offen", execution.outstanding_cents === null ? `${DASH} (nicht berechenbar)` : formatEuroCents(execution.outstanding_cents)],
     ["Stripe-Refunds", execution.stripe_refund_ids.length > 0 ? execution.stripe_refund_ids.join(", ") : DASH],
@@ -6652,24 +6745,39 @@ function refundExecutionSection(detail, c) {
   ];
   if (execution.error) pairs.push(["Fehler", c.red(execution.error)]);
   const outstanding = execution.outstanding_cents ?? 0;
-  if (detail.status === "confirmed" && execution.status !== "refunded" && outstanding > 0) {
+  if (detail.status === "confirmed" && outstanding > 0) {
     pairs.push(["N\xE4chster Schritt", `lernplattform kuendigungen refund ${detail.id} (Vorschau, echtes Geld erst mit --force)`]);
   }
   return section("Erstattung ausgef\xFChrt", keyValues(pairs, c), c);
 }
 function subscriptionCancellationSection(detail, c) {
   const cancellation = detail.subscription_cancellation;
-  if (!cancellation || !cancellation.status && !cancellation.error) return null;
-  const label = subscriptionCancellationLabel(cancellation.status);
-  const pairs = [
-    ["Ergebnis", cancellation.status === "failed" || cancellation.status === "not_found" ? c.red(c.bold(label)) : label]
-  ];
+  const bundleIds = cancellation?.bundle_user_pass_ids ?? [];
+  if (!cancellation || !cancellation.status && !cancellation.error && bundleIds.length === 0 && !cancellation.bundle_ambiguous) return null;
+  const pairs = [];
+  if (cancellation.status || cancellation.error) {
+    const label = subscriptionCancellationLabel(cancellation.status);
+    pairs.push(["Ergebnis", cancellation.status === "failed" || cancellation.status === "not_found" ? c.red(c.bold(label)) : label]);
+  }
   if (cancellation.error) pairs.push(["Fehler", c.red(cancellation.error)]);
-  return section("Abo-K\xFCndigung nach Best\xE4tigung", keyValues(pairs, c), c);
+  if (bundleIds.length > 0) {
+    const verb = detail.status === "pending" ? "enden mit" : "endeten mit";
+    pairs.push(["B\xFCndel", `ein Vertrag, P\xE4sse ${bundleIds.map((id) => `#${id}`).join(", ")} ${verb}`]);
+  }
+  if (cancellation.bundle_ambiguous) {
+    pairs.push(["B\xFCndel", c.red(c.bold("nicht eindeutig: Abo bezahlt P\xE4sse eines anderen Kaufs, Best\xE4tigen gesperrt"))]);
+  }
+  return section("Abo-K\xFCndigung (Best\xE4tigung)", keyValues(pairs, c), c);
 }
 function blockerBanner(detail, c) {
-  if (!hasWarning(detail.warnings, WARNING.paidAmountUnknown)) return null;
-  return c.red(c.bold(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`));
+  const banners = [];
+  if (hasWarning(detail.warnings, WARNING.paidAmountUnknown)) {
+    banners.push(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`);
+  }
+  if (hasWarning(detail.warnings, WARNING.bundleSubscriptionAmbiguous)) {
+    banners.push("! Best\xE4tigen gesperrt: Das Stripe-Abo bezahlt auch P\xE4sse aus einem anderen Kauf. Erst in Stripe kl\xE4ren.");
+  }
+  return banners.length > 0 ? banners.map((banner) => c.red(c.bold(banner))).join("\n") : null;
 }
 function renderCancellationDetail(detail, c) {
   const { participant, pass, subscription, review } = detail;
@@ -6743,6 +6851,7 @@ function renderCancellationDetail(detail, c) {
         ["Am", formatGermanDateTime(review.reviewed_at)],
         ["Von", reviewer],
         ["Notiz", orDash(review.admin_notes)],
+        ["Unzul\xE4ssig, weil", review.rejection_ground ? REJECTION_GROUND_LABELS[review.rejection_ground] ?? review.rejection_ground : DASH],
         ["Ablehnungsgrund", orDash(review.rejection_reason)]
       ],
       c
@@ -6786,9 +6895,10 @@ var ALLOWED_FLAGS = {
   list: [...COMMON_FLAGS, "status", "page", "per-page"],
   show: [...COMMON_FLAGS],
   confirm: [...COMMON_FLAGS, "notiz", "notiz-stdin", "notiz-base64", "wichtiger-grund-anerkannt", "als-widerruf", "force"],
-  reject: [...COMMON_FLAGS, "grund", "grund-stdin", "grund-base64", "force"],
+  reject: [...COMMON_FLAGS, "unzulaessig", "grund", "grund-stdin", "grund-base64", "force"],
   refund: [...COMMON_FLAGS, "force"]
 };
+var WRITE_OPERATIONS = ["confirm", "reject", "refund"];
 var IMPORTANT_REASON_FLAG = "wichtiger-grund-anerkannt";
 var TREAT_AS_WITHDRAWAL_FLAG = "als-widerruf";
 function assertKnownFlags(operation, args) {
@@ -6886,16 +6996,31 @@ async function confirm(client, args, io, target) {
   const response = await confirmCancellationRequest(client, id, { adminNotes, importantReasonAccepted, treatAsWithdrawal });
   writeResult(io, args, response, buildActionResultLines(response));
 }
+function parseGround(args) {
+  const value = args.flags.unzulaessig;
+  const options = Object.keys(REJECTION_GROUNDS).join(" | ");
+  if (value === void 0 || value === true) {
+    throw new AdminUsageError(
+      `--unzulaessig=<art> ist Pflicht: ${options}. Eine wirksame K\xFCndigung wird nicht abgelehnt, sondern best\xE4tigt (confirm).`
+    );
+  }
+  const ground = parseRejectionGround(String(value));
+  if (!ground) {
+    throw new AdminUsageError(`Unbekannte Art f\xFCr --unzulaessig: ${String(value)}. Erlaubt: ${options}.`);
+  }
+  return ground;
+}
 async function reject(client, args, io, target) {
   const id = parseId(args);
+  const ground = parseGround(args);
   const reason = readText(args, "grund", true);
   if (!isForce(args)) {
     const { data: detail } = await getCancellationRequest(client, id);
-    const preview = buildRejectionPreview(detail, reason);
+    const preview = buildRejectionPreview(detail, reason, ground);
     writePreview(io, args, target, preview.changesState, preview.lines, detail);
     return;
   }
-  const response = await rejectCancellationRequest(client, id, reason);
+  const response = await rejectCancellationRequest(client, id, reason, ground);
   writeResult(io, args, response, buildActionResultLines(response));
 }
 async function refund(client, args, io, target) {
@@ -6965,6 +7090,7 @@ async function executeKuendigungen(argv, io) {
   try {
     assertKnownFlags(operation, args);
     const target = resolveAdminApiTarget(args.flags.env, io.env);
+    if (WRITE_OPERATIONS.includes(operation)) requireExplicitEnvironment(target, operation);
     io.err(`Ziel: ${describeTarget(target)}`);
     const client = new AdminApiClient({
       baseUrl: target.baseUrl,
@@ -7005,6 +7131,8 @@ ABLAUF: pr\xFCfen \u2192 confirm \u2192 refund
                             L\xF6st KEINE Erstattung aus.
   3) refund <id>            Erstattung \xFCber Stripe auszahlen. ECHTES GELD.
   confirm, reject und refund sind VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau.
+  Sie brauchen immer ein ausdr\xFCckliches Ziel (--env=production|staging oder $LERNPLATTFORM_ENV),
+  sonst brechen sie ab, auch die Vorschau.
 
 AKTIONEN
   list                 K\xFCndigungsanfragen auflisten (lesend). Default: offene (pending), \xE4lteste zuerst
@@ -7012,12 +7140,16 @@ AKTIONEN
                        (gespeichert und neu berechnet), Erstattung (Berechnung und ausgef\xFChrt),
                        Abo-K\xFCndigung, Review, Warnungen (lesend)
   confirm <id>         Anfrage best\xE4tigen. VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau
-  reject <id>          Anfrage ablehnen. VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau
+  reject <id>          Unzul\xE4ssige Erkl\xE4rung ablehnen (Duplikat, keine K\xFCndigung, falscher Vertrag,
+                       Widerruf ausgeschlossen). Eine wirksame K\xFCndigung wird best\xE4tigt, nicht
+                       abgelehnt. VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau
   refund <id>          Berechnete Erstattung \xFCber Stripe auszahlen. VER\xC4NDERND, ECHTES GELD, nur nach
                        ausdr\xFCcklicher Ansage. Ohne --force nur Vorschau
 
 FLAGS
-  --env=production|staging   Zielumgebung (Default: $LERNPLATTFORM_ENV oder production)
+  --env=production|staging   Zielumgebung. Lesend (list, show): Default $LERNPLATTFORM_ENV, sonst
+                             production, stderr zeigt "Default ohne --env". Ver\xE4ndernd (confirm, reject,
+                             refund): Pflicht, ohne --env und ohne $LERNPLATTFORM_ENV Abbruch (Exit 1)
   --json                     Rohes JSON der API auf stdout statt Tabelle/Text
   list:
     --status=S               pending (Default) | confirmed | rejected | withdrawn | all
@@ -7029,10 +7161,18 @@ FLAGS
                              n\xE4chstm\xF6glichen Termin (Umdeutung, \xA7 140 BGB). Sonst 422.
     --als-widerruf           Ordentliche/au\xDFerordentliche Anfrage als Widerruf behandeln: volle Erstattung,
                              Zugang und Abo enden sofort. Nur bei Eingang innerhalb von 14 Tagen nach dem
-                             Kauf (Warnung widerruf-moeglich), nicht zusammen mit --wichtiger-grund-anerkannt.
+                             Kauf (Warnung widerruf-moeglich), nur f\xFCr Verbraucher (nie Firmenpass),
+                             nicht zusammen mit --wichtiger-grund-anerkannt.
     --notiz="\u2026"              Interne Admin-Notiz (admin_notes, max ${MAX_TEXT_LENGTH} Zeichen)
     --force                  Wirklich ausf\xFChren
   reject:
+    --unzulaessig=ART        Pflicht. Warum die Erkl\xE4rung unzul\xE4ssig ist:
+                               duplikat                 schon gek\xFCndigt oder in Pr\xFCfung
+                               keine-erklaerung         Frage, Versehen, zur\xFCckgenommen
+                               falscher-vertrag         falscher Pass, kein Vertragspartner
+                               widerruf-ausgeschlossen  nur Widerruf: Frist abgelaufen oder Firmenpass
+                             (die API-Werte duplicate, not_a_declaration, wrong_contract,
+                             withdrawal_not_available gehen auch)
     --grund="\u2026"              Pflicht. Begr\xFCndung, geht per Mail an den Teilnehmer (max ${MAX_TEXT_LENGTH} Zeichen)
     --force                  Wirklich ausf\xFChren
   refund:
@@ -7045,11 +7185,16 @@ WAS DIE BEFEHLE MIT --force AUSL\xD6SEN
   confirm --force  \u2192 Status "confirmed", Wirksamkeitsdatum wird neu festgelegt (ab Zugang der Erkl\xE4rung),
                      Zugang endet zum Wirksamkeitsdatum (sofort bei Widerruf/anerkanntem Grund),
                      Stripe-Abo wird zum Wirksamkeitsdatum gek\xFCndigt (sofort, wenn es sofort wirkt oder
-                     das Datum erreicht ist; B\xFCndel-Abos nicht), Best\xE4tigungsmail an den echten Teilnehmer.
-                     KEINE Erstattung. Gesperrt (409 paid_amount_unknown), solange das Zahlungsbuch fehlt.
-  reject --force   \u2192 Status "rejected", Ablehnungsmail mit --grund an den echten Teilnehmer.
-  refund --force   \u2192 Stripe-Refund(s) \xFCber die Zahlungen des Passes, neueste zuerst. Echtes Geld, nicht
-                     umkehrbar. Nur f\xFCr best\xE4tigte Anfragen mit bekanntem Zahlbetrag.
+                     das Datum erreicht ist), Best\xE4tigungsmail an den echten Teilnehmer. KEINE Erstattung.
+                     B\xFCndel-Abo (mehrere P\xE4sse, ein Kauf) = ein Vertrag: der Zugang ALLER P\xE4sse des B\xFCndels
+                     endet zum selben Zeitpunkt (subscription_cancellation.bundle_user_pass_ids).
+                     Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous, user_pass_missing.
+  reject --force   \u2192 Status "rejected" mit rejection_ground, Ablehnungsmail mit --grund an den Teilnehmer.
+  refund --force   \u2192 Stripe-Refund(s) \xFCber die Zahlungen des Vertrags, neueste zuerst, auf das beim Kauf
+                     genutzte Zahlungsmittel. Echtes Geld, nicht umkehrbar. Nur f\xFCr best\xE4tigte Anfragen
+                     mit bekanntem Zahlbetrag. Direkt in Stripe erstattete Betr\xE4ge sind schon abgezogen.
+                     Kommt nach der Erstattung noch eine Rate, steht die Anfrage auf partially_refunded
+                     (REST-OFFEN) und refund --force zahlt nur den Rest.
   Ohne --force: nur Vorschau (ein GET), nichts wird ver\xE4ndert, Exit 0.
   Idempotent: bereits best\xE4tigt/abgelehnt/erstattet \u2192 already_confirmed/already_rejected/already_refunded,
   keine zweite Mail, keine zweite Auszahlung. Jeder POST schickt einen frischen Idempotency-Key (UUID).
@@ -7057,8 +7202,11 @@ WAS DIE BEFEHLE MIT --force AUSL\xD6SEN
 ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
   confirm   200 confirmed | already_confirmed
             409 conflict (anderer Status) | paid_amount_unknown (Zahlungsbuch fehlt, Backfill n\xF6tig)
-            422 unprocessable (Flag passt nicht zur Anfrage, Datum nicht berechenbar)
+                | bundle_subscription_ambiguous (Abo bezahlt P\xE4sse eines anderen Kaufs)
+                | user_pass_missing (Pass gel\xF6scht)
+            422 unprocessable (Flag passt nicht zur Anfrage, z. B. Widerruf bei Firmenpass)
   reject    200 rejected | already_rejected       409 conflict
+            422 unprocessable (--unzulaessig passt nicht, z. B. widerruf-ausgeschlossen bei K\xFCndigung)
   refund    200 refunded | already_refunded | nothing_to_refund
             409 not_confirmed | paid_amount_unknown | refund_in_progress | user_pass_missing
             422 unprocessable (keine Erstattung berechenbar)
@@ -7068,6 +7216,10 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
 WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; VERSALIEN = kritisch)
   ZAHLUNGSBUCH-FEHLT       paid_amount_unknown: Best\xE4tigen gesperrt, Zahlungsbuch fehlt (Backfill:
                            php artisan pass:backfill-payments). Erstatten ebenso
+  ABO-BUENDEL-UNKLAR       bundle_subscription_ambiguous: Abo bezahlt P\xE4sse eines anderen Kaufs,
+                           Best\xE4tigen gesperrt, erst in Stripe kl\xE4ren
+  erstattung-offen         refund_outstanding: best\xE4tigt, Erstattung noch offen (oder Rest nach neuer Rate).
+                           Bei Abos erst nach der letzten Rate vor dem Wirksamkeitsdatum erstatten
   ERSTATTUNG-FEHLGESCHLAGEN refund_failed: letzter refund-Versuch von Stripe abgelehnt
   ABO-KUENDIGUNG-FEHLGESCHLAGEN subscription_cancellation_failed: Stripe-Abo nicht gek\xFCndigt \u2192 in Stripe k\xFCndigen
   ABO-NICHT-IN-STRIPE      subscription_not_found: Abo-ID am Pass, Stripe kennt das Abo nicht
@@ -7076,25 +7228,28 @@ WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; 
   widerruf-moeglich        withdrawal_possible: Eingang innerhalb 14 Tagen nach Kauf, --als-widerruf m\xF6glich
   wichtiger-grund-offen    important_reason_decision_required: au\xDFerordentlich, Entscheidung beim confirm
   vertragspreis-fehlt      contract_price_unknown: Geschuldetes mit Katalogpreis gerechnet (Gutschein fehlt)
-  abo-buendel              bundle_subscription: Abo bezahlt mehrere P\xE4sse, wird nicht automatisch gek\xFCndigt
+  abo-buendel              bundle_subscription: B\xFCndel = ein Vertrag, confirm beendet Abo und Zugang
+                           aller P\xE4sse des B\xFCndels zum selben Termin
   pass-geloescht           user_pass_missing: Pass gel\xF6scht, Zugang/Abo/Erstattung nicht pr\xFCfbar
   datum-vergangen          effective_date_in_past: gespeichertes Wirksamkeitsdatum liegt in der Vergangenheit
   offen>14d                pending_longer_than_14_days: Anfrage wartet l\xE4nger als 14 Tage
   abo-gekuendigt           subscription_already_canceled: Stripe-Abo hat schon ein Enddatum
   zugang-laenger           access_continues_after_effective_date: Zugang l\xE4uft \xFCber das Datum hinaus
   abo-ende-abweichend      subscription_end_differs_from_effective_date
-  Spalte "Erstattung" der Liste: \u2014 (keine) | l\xE4uft | erstattet | FEHLGESCHLAGEN.
+  Spalte "Erstattung" der Liste: \u2014 (keine) | l\xE4uft | erstattet | REST-OFFEN | FEHLGESCHLAGEN.
   Widerruf: Spalte "Art" zeigt "Erstattung bis TT.MM.JJJJ" (14 Tage nach Eingang, \xA7 357 BGB).
 
 RECHTLICHER RAHMEN (Berechnung macht die Plattform, die CLI zeigt sie nur)
   Ordentliche K\xFCndigung nach \xA7 5 FernUSG: im ersten Halbjahr fr\xFChestens zu dessen Ende mit 6 Wochen Frist,
   danach mit 3 Monaten Frist ab Zugang. Au\xDFerordentlich ohne anerkannten Grund: Umdeutung (\xA7 140 BGB).
-  Widerruf: 14 Tage ab Kauf, wirkt sofort, voller Betrag.
+  Widerruf: nur Verbraucher, 14 Tage ab Kauf, Vertrag endet mit Zugang, voller Betrag.
+  B\xFCndel: ein Kauf mehrerer P\xE4sse auf einem Abo gilt als ein Vertrag (Kanzlei-Frage offen).
+  Ablehnen: nur unzul\xE4ssige Erkl\xE4rungen; eine K\xFCndigung ist ein Gestaltungsrecht und wird best\xE4tigt.
 
 UMGEBUNG UND TOKEN (getrennt vom Content-Token AIDI_API_TOKEN)
   LERNPLATTFORM_ADMIN_TOKEN          Admin-Token f\xFCr production (Pflicht f\xFCr --env=production)
   LERNPLATTFORM_STAGING_ADMIN_TOKEN  Admin-Token f\xFCr staging   (Pflicht f\xFCr --env=staging)
-  LERNPLATTFORM_ENV                  Default f\xFCr --env
+  LERNPLATTFORM_ENV                  Default f\xFCr --env (z\xE4hlt als ausdr\xFCckliches Ziel)
   LERNPLATTFORM_BASE_URL             \xDCbersteuert die URL (z. B. lokale Instanz), Token nach --env
   LERNPLATTFORM_STAGING_BASIC_AUTH   user:passwort f\xFCr die nginx-Basic-Auth vor staging.
                                      Dann: Authorization: Basic \u2026, Token in X-API-Authorization
@@ -7118,22 +7273,22 @@ BEISPIELE
   lernplattform kuendigungen list --status=confirmed          # u. a. offene Erstattungen
   lernplattform kuendigungen show 12
   lernplattform kuendigungen show 12 --json | jq '.data.refund_execution'
-  lernplattform kuendigungen confirm 12                                   # Vorschau (Umdeutung bei au\xDFerordentlich)
-  lernplattform kuendigungen confirm 12 --wichtiger-grund-anerkannt       # Vorschau mit sofortiger Wirkung
-  lernplattform kuendigungen confirm 12 --als-widerruf                    # Vorschau als Widerruf
-  lernplattform kuendigungen confirm 12 --notiz="Telefonisch gekl\xE4rt" --force
-  lernplattform kuendigungen refund 12                                    # Vorschau: Betrag, erstattet, offen
-  lernplattform kuendigungen refund 12 --force                            # ECHTES GELD
-  lernplattform kuendigungen reject 12 --grund="Mindestlaufzeit nicht erreicht"   # Vorschau
+  lernplattform kuendigungen confirm 12 --env=production                  # Vorschau (Umdeutung bei au\xDFerordentlich)
+  lernplattform kuendigungen confirm 12 --env=production --wichtiger-grund-anerkannt   # Vorschau, sofortige Wirkung
+  lernplattform kuendigungen confirm 12 --env=production --als-widerruf   # Vorschau als Widerruf
+  lernplattform kuendigungen confirm 12 --env=production --notiz="Telefonisch gekl\xE4rt" --force
+  lernplattform kuendigungen refund 12 --env=production                   # Vorschau: Betrag, erstattet, offen
+  lernplattform kuendigungen refund 12 --env=production --force           # ECHTES GELD
+  lernplattform kuendigungen reject 12 --env=production --unzulaessig=duplikat --grund="Bereits am 18.09. gek\xFCndigt"   # Vorschau
   LERNPLATTFORM_BASE_URL=http://127.0.0.1:8125 lernplattform kuendigungen list
 
 WORKFLOW (f\xFCr Agenten)
   1) lernplattform kuendigungen list --json 2>/dev/null | jq '.data[] | {id, type, refund_status, warnings: [.warnings[].code]}'
   2) lernplattform kuendigungen show <id>                  # Warnungen, Wirksamkeit und Erstattung lesen
-  3) lernplattform kuendigungen confirm <id> [--wichtiger-grund-anerkannt|--als-widerruf]   # Vorschau zeigen
+  3) lernplattform kuendigungen confirm <id> --env=production [--wichtiger-grund-anerkannt|--als-widerruf]   # Vorschau
   4) Ansage abwarten, dann confirm <id> \u2026 --force          # Ergebnis auf ACHTUNG-Zeilen pr\xFCfen (Abo)
-  5) lernplattform kuendigungen refund <id>                # Vorschau zeigen, Betrag nennen
-  6) Erst nach ausdr\xFCcklicher Freigabe: refund <id> --force
+  5) lernplattform kuendigungen refund <id> --env=production   # Vorschau zeigen, Betrag nennen
+  6) Erst nach ausdr\xFCcklicher Freigabe: refund <id> --env=production --force
   Bei ZAHLUNGSBUCH-FEHLT nicht best\xE4tigen: erst Backfill auf dem Server (eigene Ansage), dann erneut pr\xFCfen.
 `;
 
