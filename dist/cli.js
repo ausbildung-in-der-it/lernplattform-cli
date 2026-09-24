@@ -5959,22 +5959,68 @@ async function refundCancellationRequest(client, id, options = {}) {
   return client.post(`${BASE_PATH}/${id}/refund`, {}, { idempotencyKey: options.idempotencyKey });
 }
 var DASH = "\u2014";
+var DISPLAY_TIME_ZONE = "Europe/Berlin";
+var DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+var berlinParts = new Intl.DateTimeFormat("en-GB", {
+  timeZone: DISPLAY_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23"
+});
+function localPartsOf(value) {
+  if (DATE_ONLY_PATTERN.test(value)) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = Object.fromEntries(berlinParts.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: parts.hour,
+    minute: parts.minute,
+    second: parts.second
+  };
+}
+function calendarDayInBerlin(value) {
+  const dateOnly = DATE_ONLY_PATTERN.exec(value);
+  if (dateOnly) return value;
+  const local = localPartsOf(value);
+  if (local) return `${local.year}-${local.month}-${local.day}`;
+  const prefix = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+  return prefix ? prefix[1] : null;
+}
+function todayInBerlin(now = /* @__PURE__ */ new Date()) {
+  return calendarDayInBerlin(now.toISOString()) ?? now.toISOString().slice(0, 10);
+}
 function formatGermanDate(value) {
   if (!value) return DASH;
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
-  if (!match) return value;
-  return `${match[3]}.${match[2]}.${match[1]}`;
+  const day = calendarDayInBerlin(value);
+  if (!day) return value;
+  const [year, month, date] = day.split("-");
+  return `${date}.${month}.${year}`;
 }
 function formatGermanDateTime(value) {
   if (!value) return DASH;
-  const time = /T(\d{2}:\d{2})/.exec(value);
-  return time ? `${formatGermanDate(value)} ${time[1]}` : formatGermanDate(value);
+  const local = localPartsOf(value);
+  if (!local) return formatGermanDate(value);
+  return `${local.day}.${local.month}.${local.year} ${local.hour}:${local.minute}`;
+}
+function formatReceiptDateTime(value) {
+  if (!value) return DASH;
+  const local = localPartsOf(value);
+  if (!local) return formatGermanDate(value);
+  return `${local.day}.${local.month}.${local.year}, ${local.hour}:${local.minute}:${local.second} Uhr`;
 }
 function formatEuroCents(cents) {
   return `${new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(cents / 100)} \u20AC`;
 }
 function withdrawalDueDateFromReceipt(receivedAt) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(receivedAt);
+  const receiptDay = calendarDayInBerlin(receivedAt);
+  const match = receiptDay ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(receiptDay) : null;
   if (!match) return null;
   const due = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + WITHDRAWAL_PERIOD_DAYS));
   return due.toISOString().slice(0, 10);
@@ -6019,7 +6065,12 @@ function shortWarningLabel(code) {
   return SHORT_WARNING_LABELS[code] ?? code;
 }
 function isWithdrawal(item) {
+  if (item.withdrawal_reinterpreted_at) return false;
   return item.type === "widerruf" || Boolean(item.withdrawal_recognized_at);
+}
+function withdrawalDecisionPending(item) {
+  if (item.status !== "pending" || item.late_withdrawal_accepted_at || item.withdrawal_reinterpreted_at) return false;
+  return WITHDRAWAL_DECISION_WARNINGS.some((code) => hasWarning(item.warnings, code));
 }
 function typeText(item) {
   return item.withdrawal_recognized_at ? `${item.type_label}, als Widerruf behandelt` : item.type_label;
@@ -6197,10 +6248,12 @@ function subscriptionLine(detail, outcome, today) {
     return detail.payment_mode === "subscription" ? { kind: "note", text: "Stripe-Abo: keine lokale Abo-Zeile. Die Plattform sucht das Abo \xFCber die Abo-ID am Pass und k\xFCndigt es dort." } : null;
   }
   const id = subscription.stripe_id;
-  if (subscription.ends_at && outcome.date && subscription.ends_at.slice(0, 10) <= outcome.date.slice(0, 10) && !outcome.immediate) {
+  const endsOn = subscription.ends_at ? calendarDayInBerlin(subscription.ends_at) : null;
+  const effectiveOn = outcome.date ? calendarDayInBerlin(outcome.date) : null;
+  if (endsOn && effectiveOn && endsOn <= effectiveOn && !outcome.immediate) {
     return { kind: "note", text: `Stripe-Abo ${id} endet bereits am ${formatGermanDate(subscription.ends_at)} und bleibt so.` };
   }
-  if (outcome.immediate || outcome.date && outcome.date.slice(0, 10) <= today) {
+  if (outcome.immediate || effectiveOn && effectiveOn <= today) {
     return { kind: "action", text: `Stripe-Abo ${id} wird sofort gek\xFCndigt (ohne anteilige Gutschrift).` };
   }
   const bundle = (detail.subscription_cancellation?.bundle_user_pass_ids ?? []).length > 0 ? ", f\xFCr das ganze B\xFCndel" : "";
@@ -6277,7 +6330,7 @@ function buildConfirmationPreview(detail, options = {}) {
     acceptLateWithdrawal: options.acceptLateWithdrawal === true,
     treatAsCancellation: options.treatAsCancellation === true
   };
-  const today = options.today ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const today = options.today ?? todayInBerlin();
   if (detail.status === "confirmed") {
     return {
       changesState: false,
@@ -6804,6 +6857,7 @@ function listTypeText(item, c) {
   const label = typeText(item);
   if (!isWithdrawal(item)) return label;
   if (item.refund_status === "refunded" || item.status !== "pending" && item.status !== "confirmed") return label;
+  if (withdrawalDecisionPending(item)) return `${label}, ${c.bold("Entscheidung offen")}`;
   const due = withdrawalDueDateFromReceipt(item.received_at);
   return due ? `${label}, ${c.bold(`Erstattung bis ${formatGermanDate(due)}`)}` : label;
 }
@@ -6996,13 +7050,16 @@ function renderCancellationDetail(detail, c) {
   }
   const importantReason = importantReasonText(detail);
   if (importantReason) requestPairs.push(["Wichtiger Grund", importantReason]);
+  if (isWithdrawal(detail) && withdrawalDecisionPending(detail)) {
+    requestPairs.push(["Widerruf", c.bold("Entscheidung offen, keine Erstattung f\xE4llig (--verspaeteten-widerruf-anerkennen oder --als-kuendigung)")]);
+  }
   if (detail.withdrawal_refund_due_at) {
     const done = detail.refund_execution?.status === "refunded";
     const due = `Erstattung sp\xE4testens bis ${formatGermanDate(detail.withdrawal_refund_due_at)} (\xA7 357 BGB)`;
     requestPairs.push(["Widerruf", done ? `${due}, erledigt` : c.bold(due)]);
   }
   requestPairs.push(
-    ["Eingang", `${formatGermanDateTime(detail.received_at)} (vor ${detail.age_days} Tagen)`],
+    ["Eingang", `${formatReceiptDateTime(detail.received_at)} (vor ${detail.age_days} Tagen)`],
     ["Quelle", sourceLabel(detail.source)],
     ["Grund", orDash(detail.reason)],
     ["Zahlungsart", paymentModeLabel(detail.payment_mode)]
@@ -7519,7 +7576,9 @@ WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; 
   zugang-laenger           access_continues_after_effective_date: Zugang l\xE4uft \xFCber das Datum hinaus
   abo-ende-abweichend      subscription_end_differs_from_effective_date
   Spalte "Erstattung" der Liste: \u2014 (keine) | l\xE4uft | erstattet | REST-OFFEN | FEHLGESCHLAGEN.
-  Widerruf: Spalte "Art" zeigt "Erstattung bis TT.MM.JJJJ" (14 Tage nach Eingang, \xA7 357 BGB).
+  Widerruf: Spalte "Art" zeigt "Erstattung bis TT.MM.JJJJ" (14 Tage nach Eingang, \xA7 357 BGB),
+  bei versp\xE4tetem Widerruf oder Firmen-Widerruf ohne Entscheidung "Entscheidung offen".
+  Alle Zeitangaben in deutscher Ortszeit (Europe/Berlin), Eingang wie auf dem Web-Beleg.
 
 RECHTLICHER RAHMEN (Berechnung macht die Plattform, die CLI zeigt sie nur)
   Ordentliche K\xFCndigung nach \xA7 5 FernUSG: im ersten Halbjahr fr\xFChestens zu dessen Ende mit 6 Wochen Frist,

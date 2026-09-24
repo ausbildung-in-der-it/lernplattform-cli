@@ -16,11 +16,13 @@ import {
   formatEuroCents,
   formatGermanDate,
   formatGermanDateTime,
+  formatReceiptDateTime,
   hasWarning,
   importantReasonText,
   isWithdrawal,
   typeText,
   paymentModeLabel,
+  withdrawalDecisionPending,
   shortWarningLabel,
   subscriptionCancellationLabel,
   withdrawalDueDateFromReceipt,
@@ -121,11 +123,15 @@ function warningCodeText(code: string, c: Palette): string {
   return isCritical(code) ? c.red(c.bold(label)) : c.yellow(label);
 }
 
-/** Widerruf in der Liste: Art plus Fälligkeit der Erstattung, solange nicht erstattet. */
+/**
+ * Widerruf in der Liste: Art plus Fälligkeit der Erstattung, solange nicht erstattet.
+ * Braucht der Widerruf noch eine Entscheidung (Frist abgelaufen, Firmenpass), ist nichts fällig.
+ */
 function listTypeText(item: CancellationRequestSummary, c: Palette): string {
   const label = typeText(item);
   if (!isWithdrawal(item)) return label;
   if (item.refund_status === 'refunded' || (item.status !== 'pending' && item.status !== 'confirmed')) return label;
+  if (withdrawalDecisionPending(item)) return `${label}, ${c.bold('Entscheidung offen')}`;
   const due = withdrawalDueDateFromReceipt(item.received_at);
   return due ? `${label}, ${c.bold(`Erstattung bis ${formatGermanDate(due)}`)}` : label;
 }
@@ -350,13 +356,16 @@ export function renderCancellationDetail(detail: CancellationRequestDetail, c: P
   }
   const importantReason = importantReasonText(detail);
   if (importantReason) requestPairs.push(['Wichtiger Grund', importantReason]);
+  if (isWithdrawal(detail) && withdrawalDecisionPending(detail)) {
+    requestPairs.push(['Widerruf', c.bold('Entscheidung offen, keine Erstattung fällig (--verspaeteten-widerruf-anerkennen oder --als-kuendigung)')]);
+  }
   if (detail.withdrawal_refund_due_at) {
     const done = detail.refund_execution?.status === 'refunded';
     const due = `Erstattung spätestens bis ${formatGermanDate(detail.withdrawal_refund_due_at)} (§ 357 BGB)`;
     requestPairs.push(['Widerruf', done ? `${due}, erledigt` : c.bold(due)]);
   }
   requestPairs.push(
-    ['Eingang', `${formatGermanDateTime(detail.received_at)} (vor ${detail.age_days} Tagen)`],
+    ['Eingang', `${formatReceiptDateTime(detail.received_at)} (vor ${detail.age_days} Tagen)`],
     ['Quelle', sourceLabel(detail.source)],
     ['Grund', orDash(detail.reason)],
     ['Zahlungsart', paymentModeLabel(detail.payment_mode)]

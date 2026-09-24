@@ -273,6 +273,63 @@ describe('lernplattform kuendigungen', () => {
     assert.match(result.stdout, /Bestätigen gesperrt, Zahlungsbuch fehlt \(Backfill\): #8$/m);
   });
 
+  it('list shows an open decision instead of a refund date for late and company withdrawals', async () => {
+    const withdrawal = {
+      type: 'widerruf', type_label: 'Widerruf', status: 'pending', status_label: 'Ausstehend',
+      received_at: '2026-09-20T10:00:00+02:00', age_days: 3, effective_date: null,
+      participant_email: 'w@example.com', pass_name: 'IT-Pass 12 Monate', payment_mode: 'one_time', refund_status: 'none',
+    };
+    stubFetch(() => ({
+      status: 200,
+      body: {
+        data: [
+          { ...withdrawal, id: 21, participant_name: 'Spaet Widerruf', warnings: [{ code: 'withdrawal_period_extended_possible', message: '…' }] },
+          { ...withdrawal, id: 22, participant_name: 'Alt Widerruf', warnings: [{ code: 'withdrawal_period_expired', message: '…' }] },
+          { ...withdrawal, id: 23, participant_name: 'Firma Widerruf', warnings: [{ code: 'business_customer', message: '…' }] },
+          {
+            ...withdrawal, id: 24, participant_name: 'Anerkannt Widerruf', status: 'confirmed', status_label: 'Bestätigt',
+            late_withdrawal_accepted_at: '2026-09-23T12:00:00+02:00', warnings: [],
+          },
+          {
+            ...withdrawal, id: 25, participant_name: 'Umgedeutet Widerruf', status: 'confirmed', status_label: 'Bestätigt',
+            withdrawal_reinterpreted_at: '2026-09-23T12:00:00+02:00', effective_date: '2026-12-01', warnings: [],
+          },
+        ],
+        meta: { current_page: 1, last_page: 1, per_page: 25, total: 5, status: 'all' },
+      },
+    }));
+
+    const result = await execute(['list', '--status=all']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.match(result.stdout, /#21 .*Widerruf, Entscheidung offen /);
+    assert.match(result.stdout, /#22 .*Widerruf, Entscheidung offen /);
+    assert.match(result.stdout, /#23 .*Widerruf, Entscheidung offen /);
+    assert.match(result.stdout, /#24 .*Widerruf, Erstattung bis 04\.10\.2026 /);
+    assert.match(result.stdout, /#25 .*Umgedeutet Widerruf\s+IT-Pass 12 Monate\s+Widerruf\s+01\.12\.2026/);
+    assert.doesNotMatch(result.stdout, /#2[1235] .*Erstattung bis/);
+  });
+
+  it('show states the receipt time in German local time like the web receipt', async () => {
+    stubFetch(() => ({ status: 200, body: { data: cancellationDetail({ received_at: '2026-09-23T14:05:07.000000Z' }) } }));
+
+    const result = await execute(['show', '12']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.match(result.stdout, /Eingang\s+23\.09\.2026, 16:05:07 Uhr \(vor/);
+    assert.doesNotMatch(result.stdout, /14:05/);
+  });
+
+  it('show states the open decision of a late withdrawal instead of a refund date', async () => {
+    stubFetch(() => ({ status: 200, body: { data: lateWithdrawalDetail() } }));
+
+    const result = await execute(['show', '41']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.match(result.stdout, /Widerruf\s+Entscheidung offen, keine Erstattung fällig/);
+    assert.doesNotMatch(result.stdout, /Erstattung spätestens bis/);
+  });
+
   it('show renders important reason, withdrawal due date, refund execution and subscription cancellation', async () => {
     const detail = confirmedDetail({
       type: 'ausserordentlich',

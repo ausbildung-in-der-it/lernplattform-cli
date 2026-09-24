@@ -138,6 +138,10 @@ export interface CancellationRequestSummary {
   type_label: string;
   /** gesetzt, wenn die Anfrage beim Bestätigen als Widerruf behandelt wurde (treat_as_withdrawal) */
   withdrawal_recognized_at?: string | null;
+  /** verspäteter Widerruf beim Bestätigen anerkannt (accept_late_withdrawal) */
+  late_withdrawal_accepted_at?: string | null;
+  /** Widerruf beim Bestätigen als ordentliche Kündigung behandelt (treat_as_cancellation) */
+  withdrawal_reinterpreted_at?: string | null;
   status: CancellationStatus;
   status_label: string;
   received_at: string;
@@ -215,6 +219,10 @@ export interface CancellationRequestDetail {
   important_reason_accepted: boolean | null;
   /** gesetzt, wenn die Anfrage beim Bestätigen als Widerruf behandelt wurde (treat_as_withdrawal); type bleibt die Wahl des Kunden */
   withdrawal_recognized_at?: string | null;
+  /** verspäteter Widerruf beim Bestätigen anerkannt (accept_late_withdrawal) */
+  late_withdrawal_accepted_at?: string | null;
+  /** Widerruf beim Bestätigen als ordentliche Kündigung behandelt (treat_as_cancellation) */
+  withdrawal_reinterpreted_at?: string | null;
   received_at: string;
   /** nur bei Widerruf: Erstattung spätestens bis (YYYY-MM-DD) */
   withdrawal_refund_due_at: string | null;
@@ -410,19 +418,88 @@ export async function refundCancellationRequest(
 
 export const DASH = '—';
 
-/** YYYY-MM-DD oder ISO-Zeitpunkt -> TT.MM.JJJJ (Kalendertag laut Offset der API). */
-export function formatGermanDate(value: string | null | undefined): string {
-  if (!value) return DASH;
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
-  if (!match) return value;
-  return `${match[3]}.${match[2]}.${match[1]}`;
+/**
+ * Zeitpunkte zeigt die CLI in deutscher Ortszeit, wie der Eingangsbeleg im Web,
+ * egal in welchem Offset die API sie liefert (UTC oder +02:00).
+ */
+export const DISPLAY_TIME_ZONE = 'Europe/Berlin';
+
+const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const berlinParts = new Intl.DateTimeFormat('en-GB', {
+  timeZone: DISPLAY_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+interface LocalParts {
+  year: string;
+  month: string;
+  day: string;
+  hour: string;
+  minute: string;
+  second: string;
 }
 
-/** ISO-Zeitpunkt -> TT.MM.JJJJ HH:MM (Uhrzeit laut Offset der API). */
+/** ISO-Zeitpunkt -> Datum und Uhrzeit in Europe/Berlin; null bei reinem Datum oder unlesbarem Wert. */
+function localPartsOf(value: string): LocalParts | null {
+  if (DATE_ONLY_PATTERN.test(value)) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = Object.fromEntries(berlinParts.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: parts.hour,
+    minute: parts.minute,
+    second: parts.second,
+  };
+}
+
+/** Kalendertag (YYYY-MM-DD) eines Datums oder Zeitpunkts in deutscher Ortszeit. */
+export function calendarDayInBerlin(value: string): string | null {
+  const dateOnly = DATE_ONLY_PATTERN.exec(value);
+  if (dateOnly) return value;
+  const local = localPartsOf(value);
+  if (local) return `${local.year}-${local.month}-${local.day}`;
+  const prefix = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+  return prefix ? prefix[1] : null;
+}
+
+/** Heute als YYYY-MM-DD in deutscher Ortszeit. */
+export function todayInBerlin(now: Date = new Date()): string {
+  return calendarDayInBerlin(now.toISOString()) ?? now.toISOString().slice(0, 10);
+}
+
+/** YYYY-MM-DD oder ISO-Zeitpunkt -> TT.MM.JJJJ (Kalendertag in Europe/Berlin). */
+export function formatGermanDate(value: string | null | undefined): string {
+  if (!value) return DASH;
+  const day = calendarDayInBerlin(value);
+  if (!day) return value;
+  const [year, month, date] = day.split('-');
+  return `${date}.${month}.${year}`;
+}
+
+/** ISO-Zeitpunkt -> TT.MM.JJJJ HH:MM in Europe/Berlin. */
 export function formatGermanDateTime(value: string | null | undefined): string {
   if (!value) return DASH;
-  const time = /T(\d{2}:\d{2})/.exec(value);
-  return time ? `${formatGermanDate(value)} ${time[1]}` : formatGermanDate(value);
+  const local = localPartsOf(value);
+  if (!local) return formatGermanDate(value);
+  return `${local.day}.${local.month}.${local.year} ${local.hour}:${local.minute}`;
+}
+
+/** Eingang wie auf dem Web-Beleg: TT.MM.JJJJ, HH:MM:SS Uhr in Europe/Berlin. */
+export function formatReceiptDateTime(value: string | null | undefined): string {
+  if (!value) return DASH;
+  const local = localPartsOf(value);
+  if (!local) return formatGermanDate(value);
+  return `${local.day}.${local.month}.${local.year}, ${local.hour}:${local.minute}:${local.second} Uhr`;
 }
 
 /** Cent -> "1.234,56 €" wie PriceFormatter der Plattform. */
@@ -436,7 +513,8 @@ export function formatEuroCents(cents: number): string {
  * withdrawal_refund_due_at nicht haben; show nutzt den Wert der API.
  */
 export function withdrawalDueDateFromReceipt(receivedAt: string): string | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(receivedAt);
+  const receiptDay = calendarDayInBerlin(receivedAt);
+  const match = receiptDay ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(receiptDay) : null;
   if (!match) return null;
   const due = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + WITHDRAWAL_PERIOD_DAYS));
   return due.toISOString().slice(0, 10);
@@ -487,9 +565,32 @@ export function shortWarningLabel(code: string): string {
   return SHORT_WARNING_LABELS[code] ?? code;
 }
 
-/** Widerruf im rechtlichen Sinn: als Widerruf erklärt oder beim Bestätigen als Widerruf behandelt. */
-export function isWithdrawal(item: { type: CancellationType; withdrawal_recognized_at?: string | null }): boolean {
+/**
+ * Widerruf im rechtlichen Sinn: als Widerruf erklärt oder beim Bestätigen als Widerruf behandelt,
+ * aber nicht, wenn der Widerruf beim Bestätigen als ordentliche Kündigung behandelt wurde.
+ */
+export function isWithdrawal(item: {
+  type: CancellationType;
+  withdrawal_recognized_at?: string | null;
+  withdrawal_reinterpreted_at?: string | null;
+}): boolean {
+  if (item.withdrawal_reinterpreted_at) return false;
   return item.type === 'widerruf' || Boolean(item.withdrawal_recognized_at);
+}
+
+/**
+ * Offener Widerruf nach Fristablauf oder zu einem Firmenpass (AIDI-772): Bis zur Entscheidung
+ * (--verspaeteten-widerruf-anerkennen oder --als-kuendigung) ist keine Erstattung fällig,
+ * die API liefert dann auch kein withdrawal_refund_due_at.
+ */
+export function withdrawalDecisionPending(item: {
+  status: CancellationStatus;
+  warnings: CancellationWarning[];
+  late_withdrawal_accepted_at?: string | null;
+  withdrawal_reinterpreted_at?: string | null;
+}): boolean {
+  if (item.status !== 'pending' || item.late_withdrawal_accepted_at || item.withdrawal_reinterpreted_at) return false;
+  return WITHDRAWAL_DECISION_WARNINGS.some((code) => hasWarning(item.warnings, code));
 }
 
 /** Art für Anzeige: bei treat_as_withdrawal die Kundenwahl plus „als Widerruf behandelt“. */
@@ -743,11 +844,13 @@ function subscriptionLine(detail: CancellationRequestDetail, outcome: EffectiveO
   }
 
   const id = subscription.stripe_id;
-  if (subscription.ends_at && outcome.date && subscription.ends_at.slice(0, 10) <= outcome.date.slice(0, 10) && !outcome.immediate) {
+  const endsOn = subscription.ends_at ? calendarDayInBerlin(subscription.ends_at) : null;
+  const effectiveOn = outcome.date ? calendarDayInBerlin(outcome.date) : null;
+  if (endsOn && effectiveOn && endsOn <= effectiveOn && !outcome.immediate) {
     return { kind: 'note', text: `Stripe-Abo ${id} endet bereits am ${formatGermanDate(subscription.ends_at)} und bleibt so.` };
   }
 
-  if (outcome.immediate || (outcome.date && outcome.date.slice(0, 10) <= today)) {
+  if (outcome.immediate || (effectiveOn && effectiveOn <= today)) {
     return { kind: 'action', text: `Stripe-Abo ${id} wird sofort gekündigt (ohne anteilige Gutschrift).` };
   }
 
@@ -864,7 +967,7 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
     acceptLateWithdrawal: options.acceptLateWithdrawal === true,
     treatAsCancellation: options.treatAsCancellation === true,
   };
-  const today = options.today ?? new Date().toISOString().slice(0, 10);
+  const today = options.today ?? todayInBerlin();
 
   if (detail.status === 'confirmed') {
     return {

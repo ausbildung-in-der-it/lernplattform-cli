@@ -568,7 +568,9 @@ WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; 
   zugang-laenger           access_continues_after_effective_date: Zugang läuft über das Datum hinaus
   abo-ende-abweichend      subscription_end_differs_from_effective_date
   Spalte "Erstattung" der Liste: — (keine) | läuft | erstattet | REST-OFFEN | FEHLGESCHLAGEN.
-  Widerruf: Spalte "Art" zeigt "Erstattung bis TT.MM.JJJJ" (14 Tage nach Eingang, § 357 BGB).
+  Widerruf: Spalte "Art" zeigt "Erstattung bis TT.MM.JJJJ" (14 Tage nach Eingang, § 357 BGB),
+  bei verspätetem Widerruf oder Firmen-Widerruf ohne Entscheidung "Entscheidung offen".
+  Alle Zeitangaben in deutscher Ortszeit (Europe/Berlin), Eingang wie auf dem Web-Beleg.
 
 RECHTLICHER RAHMEN (Berechnung macht die Plattform, die CLI zeigt sie nur)
   Ordentliche Kündigung nach § 5 FernUSG: im ersten Halbjahr frühestens zu dessen Ende mit 6 Wochen Frist,
