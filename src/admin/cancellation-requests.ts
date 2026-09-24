@@ -72,7 +72,19 @@ export const WARNING = {
   subscriptionCancellationFailed: 'subscription_cancellation_failed',
   refundFailed: 'refund_failed',
   withdrawalPossible: 'withdrawal_possible',
+  unmatched: 'unmatched',
+  effectiveDateUnknown: 'effective_date_unknown',
+  businessCustomer: 'business_customer',
+  withdrawalPeriodExtendedPossible: 'withdrawal_period_extended_possible',
+  withdrawalPeriodExpired: 'withdrawal_period_expired',
 } as const;
+
+/** Widerrufe, die nicht einfach bestätigt werden: Admin entscheidet (AIDI-772). */
+export const WITHDRAWAL_DECISION_WARNINGS: readonly string[] = [
+  WARNING.businessCustomer,
+  WARNING.withdrawalPeriodExtendedPossible,
+  WARNING.withdrawalPeriodExpired,
+];
 
 /** Bestätigt, Abo vorhanden, aber ohne Enddatum: Stripe cancel_at ist vermutlich fehlgeschlagen. */
 export const STRIPE_CANCEL_MISSING_WARNING = WARNING.subscriptionCancelAtMissing;
@@ -86,6 +98,10 @@ export const CRITICAL_WARNINGS: readonly string[] = [
   WARNING.paidAmountUnknown,
   WARNING.bundleSubscriptionAmbiguous,
   WARNING.companyMultiSeatSubscription,
+  WARNING.unmatched,
+  WARNING.businessCustomer,
+  WARNING.withdrawalPeriodExtendedPossible,
+  WARNING.withdrawalPeriodExpired,
 ];
 
 /** Übergangssperre bis AIDI-776: Firmen kündigen Lizenzen einzeln, das ist noch nicht automatisiert. */
@@ -94,6 +110,22 @@ export const COMPANY_MULTI_SEAT_TEXT =
 
 /** Text für paid_amount_unknown in show, Liste und Vorschau. */
 export const LEDGER_MISSING_TEXT = 'Bestätigen gesperrt, Zahlungsbuch fehlt (Backfill)';
+
+/** Text für unmatched: Erklärung vom Kündigungsbutton ohne Vertrag (AIDI-771). */
+export const UNMATCHED_TEXT = 'Keinem Vertrag zugeordnet, Bestätigen gesperrt: erst zuordnen <id> --pass=<user_pass_id>';
+
+/** Woher eine Erklärung kam (source der API). */
+export type CancellationSource = 'account_form' | 'cancellation_button';
+
+export const SOURCE_LABELS: Record<CancellationSource, string> = {
+  account_form: 'Kündigungsformular im Konto',
+  cancellation_button: 'Kündigungsbutton (öffentlich, § 312k/§ 356a BGB)',
+};
+
+export function sourceLabel(source: string | null | undefined): string {
+  if (!source) return SOURCE_LABELS.account_form;
+  return SOURCE_LABELS[source as CancellationSource] ?? source;
+}
 
 export interface CancellationWarning {
   code: string;
@@ -106,6 +138,10 @@ export interface CancellationRequestSummary {
   type_label: string;
   /** gesetzt, wenn die Anfrage beim Bestätigen als Widerruf behandelt wurde (treat_as_withdrawal) */
   withdrawal_recognized_at?: string | null;
+  /** verspäteter Widerruf beim Bestätigen anerkannt (accept_late_withdrawal) */
+  late_withdrawal_accepted_at?: string | null;
+  /** Widerruf beim Bestätigen als ordentliche Kündigung behandelt (treat_as_cancellation) */
+  withdrawal_reinterpreted_at?: string | null;
   status: CancellationStatus;
   status_label: string;
   received_at: string;
@@ -117,6 +153,13 @@ export interface CancellationRequestSummary {
   payment_mode: PaymentMode | null;
   refund_status: RefundStatus;
   warnings: CancellationWarning[];
+  /** Quelle der Erklärung (ab AIDI-771), fehlt bei älteren Servern */
+  source?: CancellationSource;
+  /** Kündigungsbutton ohne eindeutigen Vertrag: pass_name und effective_date sind null */
+  unmatched?: boolean;
+  /** Angaben des Absenders zum Vertrag bzw. zur Firma */
+  contract_reference?: string | null;
+  company_name?: string | null;
 }
 
 export interface CancellationRequestListResponse {
@@ -127,6 +170,7 @@ export interface CancellationRequestListResponse {
     per_page: number;
     total: number;
     status: CancellationStatusFilter;
+    unmatched?: boolean;
   };
 }
 
@@ -175,29 +219,27 @@ export interface CancellationRequestDetail {
   important_reason_accepted: boolean | null;
   /** gesetzt, wenn die Anfrage beim Bestätigen als Widerruf behandelt wurde (treat_as_withdrawal); type bleibt die Wahl des Kunden */
   withdrawal_recognized_at?: string | null;
+  /** verspäteter Widerruf beim Bestätigen anerkannt (accept_late_withdrawal) */
+  late_withdrawal_accepted_at?: string | null;
+  /** Widerruf beim Bestätigen als ordentliche Kündigung behandelt (treat_as_cancellation) */
+  withdrawal_reinterpreted_at?: string | null;
   received_at: string;
   /** nur bei Widerruf: Erstattung spätestens bis (YYYY-MM-DD) */
   withdrawal_refund_due_at: string | null;
   age_days: number;
   participant: {
-    user_id: number;
+    /** null, wenn zum Absender kein Konto gefunden wurde */
+    user_id: number | null;
     name: string;
     email: string;
     address: { street: string | null; zip: string | null; city: string | null } | null;
     address_formatted: string | null;
+    /** Angaben auf dem Kündigungsbutton */
+    company_name?: string | null;
+    contract_reference?: string | null;
   };
-  /** null, wenn der Pass gelöscht ist (Warnung user_pass_missing) */
-  pass: {
-    user_pass_id: number;
-    name: string;
-    duration_months: number | null;
-    purchased_at: string | null;
-    activated_at: string | null;
-    valid_until: string | null;
-    user_pass_status: string | null;
-    is_b2b: boolean;
-    company_name: string | null;
-  } | null;
+  /** null, wenn der Pass gelöscht (Warnung user_pass_missing) oder noch nicht zugeordnet ist (Warnung unmatched) */
+  pass: CancellationPass | null;
   payment_mode: PaymentMode | null;
   subscription: {
     stripe_id: string;
@@ -213,6 +255,8 @@ export interface CancellationRequestDetail {
     recalculation_error: string | null;
     recalculated_ends_regularly: boolean;
     recalculated_reinterpreted_as_ordinary: boolean;
+    /** vom Absender gewünschter späterer Termin (YYYY-MM-DD), null = nächstmöglich */
+    requested?: string | null;
   };
   refund: CancellationRefund | null;
   refund_error: string | null;
@@ -233,6 +277,32 @@ export interface CancellationRequestDetail {
     rejection_ground?: RejectionGround | null;
   };
   warnings: CancellationWarning[];
+  source?: CancellationSource;
+  assignment?: CancellationAssignment | null;
+}
+
+export interface CancellationPass {
+  user_pass_id: number;
+  name: string;
+  duration_months: number | null;
+  purchased_at: string | null;
+  activated_at: string | null;
+  valid_until: string | null;
+  user_pass_status: string | null;
+  is_b2b: boolean;
+  company_name: string | null;
+  /** Inhaberin der Lizenz (bei Firmenlizenzen die Mitarbeiterin) */
+  holder_name?: string | null;
+  holder_email?: string | null;
+}
+
+/** Zuordnung zum Vertrag (AIDI-771). candidates nur, solange offen und nicht zugeordnet. */
+export interface CancellationAssignment {
+  unmatched: boolean;
+  assigned_at: string | null;
+  assigned_by: { id: number; name: string | null; email: string } | null;
+  account_user_id: number | null;
+  candidates: CancellationPass[];
 }
 
 export interface CancellationRequestResponse {
@@ -252,6 +322,13 @@ export interface CancellationRefundResponse {
   meta: { result: CancellationRefundResult };
 }
 
+export type CancellationAssignmentResult = 'assigned' | 'already_assigned';
+
+export interface CancellationAssignmentResponse {
+  data: CancellationRequestDetail;
+  meta: { result: CancellationAssignmentResult };
+}
+
 // ============================================================================
 // API-Aufrufe
 // ============================================================================
@@ -260,12 +337,13 @@ const BASE_PATH = '/cancellation-requests';
 
 export async function listCancellationRequests(
   client: AdminApiClient,
-  options: { status?: CancellationStatusFilter; page?: number; perPage?: number } = {}
+  options: { status?: CancellationStatusFilter; page?: number; perPage?: number; onlyUnmatched?: boolean } = {}
 ): Promise<CancellationRequestListResponse> {
   return client.get<CancellationRequestListResponse>(BASE_PATH, {
     status: options.status,
     page: options.page,
     per_page: options.perPage,
+    unmatched: options.onlyUnmatched ? 1 : undefined,
   });
 }
 
@@ -276,12 +354,21 @@ export async function getCancellationRequest(client: AdminApiClient, id: number)
 export async function confirmCancellationRequest(
   client: AdminApiClient,
   id: number,
-  options: { adminNotes?: string; importantReasonAccepted?: boolean; treatAsWithdrawal?: boolean; idempotencyKey?: string } = {}
+  options: {
+    adminNotes?: string;
+    importantReasonAccepted?: boolean;
+    treatAsWithdrawal?: boolean;
+    acceptLateWithdrawal?: boolean;
+    treatAsCancellation?: boolean;
+    idempotencyKey?: string;
+  } = {}
 ): Promise<CancellationActionResponse> {
   const body: Record<string, unknown> = {};
   if (options.adminNotes) body.admin_notes = options.adminNotes;
   if (options.importantReasonAccepted) body.important_reason_accepted = true;
   if (options.treatAsWithdrawal) body.treat_as_withdrawal = true;
+  if (options.acceptLateWithdrawal) body.accept_late_withdrawal = true;
+  if (options.treatAsCancellation) body.treat_as_cancellation = true;
 
   return client.post<CancellationActionResponse>(`${BASE_PATH}/${id}/confirmation`, body, {
     idempotencyKey: options.idempotencyKey,
@@ -302,6 +389,20 @@ export async function rejectCancellationRequest(
   );
 }
 
+/** Ordnet eine Erklärung einem Pass zu; das Wirksamkeitsdatum rechnet der Server ab Eingang. */
+export async function assignCancellationRequest(
+  client: AdminApiClient,
+  id: number,
+  userPassId: number,
+  options: { idempotencyKey?: string } = {}
+): Promise<CancellationAssignmentResponse> {
+  return client.post<CancellationAssignmentResponse>(
+    `${BASE_PATH}/${id}/assignment`,
+    { user_pass_id: userPassId },
+    { idempotencyKey: options.idempotencyKey }
+  );
+}
+
 /** Zahlt die berechnete Erstattung über Stripe aus. Echtes Geld. */
 export async function refundCancellationRequest(
   client: AdminApiClient,
@@ -317,19 +418,88 @@ export async function refundCancellationRequest(
 
 export const DASH = '—';
 
-/** YYYY-MM-DD oder ISO-Zeitpunkt -> TT.MM.JJJJ (Kalendertag laut Offset der API). */
-export function formatGermanDate(value: string | null | undefined): string {
-  if (!value) return DASH;
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
-  if (!match) return value;
-  return `${match[3]}.${match[2]}.${match[1]}`;
+/**
+ * Zeitpunkte zeigt die CLI in deutscher Ortszeit, wie der Eingangsbeleg im Web,
+ * egal in welchem Offset die API sie liefert (UTC oder +02:00).
+ */
+export const DISPLAY_TIME_ZONE = 'Europe/Berlin';
+
+const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const berlinParts = new Intl.DateTimeFormat('en-GB', {
+  timeZone: DISPLAY_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+interface LocalParts {
+  year: string;
+  month: string;
+  day: string;
+  hour: string;
+  minute: string;
+  second: string;
 }
 
-/** ISO-Zeitpunkt -> TT.MM.JJJJ HH:MM (Uhrzeit laut Offset der API). */
+/** ISO-Zeitpunkt -> Datum und Uhrzeit in Europe/Berlin; null bei reinem Datum oder unlesbarem Wert. */
+function localPartsOf(value: string): LocalParts | null {
+  if (DATE_ONLY_PATTERN.test(value)) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = Object.fromEntries(berlinParts.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: parts.hour,
+    minute: parts.minute,
+    second: parts.second,
+  };
+}
+
+/** Kalendertag (YYYY-MM-DD) eines Datums oder Zeitpunkts in deutscher Ortszeit. */
+export function calendarDayInBerlin(value: string): string | null {
+  const dateOnly = DATE_ONLY_PATTERN.exec(value);
+  if (dateOnly) return value;
+  const local = localPartsOf(value);
+  if (local) return `${local.year}-${local.month}-${local.day}`;
+  const prefix = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+  return prefix ? prefix[1] : null;
+}
+
+/** Heute als YYYY-MM-DD in deutscher Ortszeit. */
+export function todayInBerlin(now: Date = new Date()): string {
+  return calendarDayInBerlin(now.toISOString()) ?? now.toISOString().slice(0, 10);
+}
+
+/** YYYY-MM-DD oder ISO-Zeitpunkt -> TT.MM.JJJJ (Kalendertag in Europe/Berlin). */
+export function formatGermanDate(value: string | null | undefined): string {
+  if (!value) return DASH;
+  const day = calendarDayInBerlin(value);
+  if (!day) return value;
+  const [year, month, date] = day.split('-');
+  return `${date}.${month}.${year}`;
+}
+
+/** ISO-Zeitpunkt -> TT.MM.JJJJ HH:MM in Europe/Berlin. */
 export function formatGermanDateTime(value: string | null | undefined): string {
   if (!value) return DASH;
-  const time = /T(\d{2}:\d{2})/.exec(value);
-  return time ? `${formatGermanDate(value)} ${time[1]}` : formatGermanDate(value);
+  const local = localPartsOf(value);
+  if (!local) return formatGermanDate(value);
+  return `${local.day}.${local.month}.${local.year} ${local.hour}:${local.minute}`;
+}
+
+/** Eingang wie auf dem Web-Beleg: TT.MM.JJJJ, HH:MM:SS Uhr in Europe/Berlin. */
+export function formatReceiptDateTime(value: string | null | undefined): string {
+  if (!value) return DASH;
+  const local = localPartsOf(value);
+  if (!local) return formatGermanDate(value);
+  return `${local.day}.${local.month}.${local.year}, ${local.hour}:${local.minute}:${local.second} Uhr`;
 }
 
 /** Cent -> "1.234,56 €" wie PriceFormatter der Plattform. */
@@ -343,7 +513,8 @@ export function formatEuroCents(cents: number): string {
  * withdrawal_refund_due_at nicht haben; show nutzt den Wert der API.
  */
 export function withdrawalDueDateFromReceipt(receivedAt: string): string | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(receivedAt);
+  const receiptDay = calendarDayInBerlin(receivedAt);
+  const match = receiptDay ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(receiptDay) : null;
   if (!match) return null;
   const due = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + WITHDRAWAL_PERIOD_DAYS));
   return due.toISOString().slice(0, 10);
@@ -383,15 +554,43 @@ export const SHORT_WARNING_LABELS: Record<string, string> = {
   [WARNING.subscriptionCancellationFailed]: 'ABO-KUENDIGUNG-FEHLGESCHLAGEN',
   [WARNING.refundFailed]: 'ERSTATTUNG-FEHLGESCHLAGEN',
   [WARNING.withdrawalPossible]: 'widerruf-moeglich',
+  [WARNING.unmatched]: 'NICHT-ZUGEORDNET',
+  [WARNING.effectiveDateUnknown]: 'datum-offen',
+  [WARNING.businessCustomer]: 'FIRMENKUNDE-WIDERRUF',
+  [WARNING.withdrawalPeriodExtendedPossible]: 'WIDERRUF-VERSPAETET',
+  [WARNING.withdrawalPeriodExpired]: 'WIDERRUF-FRIST-ABGELAUFEN',
 };
 
 export function shortWarningLabel(code: string): string {
   return SHORT_WARNING_LABELS[code] ?? code;
 }
 
-/** Widerruf im rechtlichen Sinn: als Widerruf erklärt oder beim Bestätigen als Widerruf behandelt. */
-export function isWithdrawal(item: { type: CancellationType; withdrawal_recognized_at?: string | null }): boolean {
+/**
+ * Widerruf im rechtlichen Sinn: als Widerruf erklärt oder beim Bestätigen als Widerruf behandelt,
+ * aber nicht, wenn der Widerruf beim Bestätigen als ordentliche Kündigung behandelt wurde.
+ */
+export function isWithdrawal(item: {
+  type: CancellationType;
+  withdrawal_recognized_at?: string | null;
+  withdrawal_reinterpreted_at?: string | null;
+}): boolean {
+  if (item.withdrawal_reinterpreted_at) return false;
   return item.type === 'widerruf' || Boolean(item.withdrawal_recognized_at);
+}
+
+/**
+ * Offener Widerruf nach Fristablauf oder zu einem Firmenpass (AIDI-772): Bis zur Entscheidung
+ * (--verspaeteten-widerruf-anerkennen oder --als-kuendigung) ist keine Erstattung fällig,
+ * die API liefert dann auch kein withdrawal_refund_due_at.
+ */
+export function withdrawalDecisionPending(item: {
+  status: CancellationStatus;
+  warnings: CancellationWarning[];
+  late_withdrawal_accepted_at?: string | null;
+  withdrawal_reinterpreted_at?: string | null;
+}): boolean {
+  if (item.status !== 'pending' || item.late_withdrawal_accepted_at || item.withdrawal_reinterpreted_at) return false;
+  return WITHDRAWAL_DECISION_WARNINGS.some((code) => hasWarning(item.warnings, code));
 }
 
 /** Art für Anzeige: bei treat_as_withdrawal die Kundenwahl plus „als Widerruf behandelt“. */
@@ -501,13 +700,38 @@ interface EffectiveOutcome {
  * Widerruf und anerkannter wichtiger Grund wirken sofort mit Zugang der Erklärung,
  * alles andere zum neu berechneten Termin (bei außerordentlich ohne Grund umgedeutet).
  */
-function effectiveOutcome(
-  detail: CancellationRequestDetail,
-  decision: { importantReasonAccepted: boolean; treatAsWithdrawal: boolean }
-): EffectiveOutcome {
+function effectiveOutcome(detail: CancellationRequestDetail, decision: ConfirmationDecision): EffectiveOutcome {
   const received = formatGermanDate(detail.received_at);
   const { recalculated, stored } = detail.effective_date;
   const { importantReasonAccepted } = decision;
+
+  if (decision.treatAsCancellation) {
+    const regular = detail.effective_date.recalculated_ends_regularly ? ', das ist das reguläre Vertragsende' : '';
+    return {
+      date: recalculated,
+      immediate: false,
+      lines: [
+        {
+          kind: 'action',
+          text: `Widerruf wird als ordentliche Kündigung behandelt (§ 140 BGB): wirksam zum ${formatGermanDate(recalculated)}${regular}. Die Mail erklärt, warum (Firmenlizenz bzw. Frist abgelaufen).`,
+        },
+      ],
+    };
+  }
+
+  if (decision.acceptLateWithdrawal) {
+    const fullAmount = detail.refund ? `volle Erstattung ${detail.refund.paid_amount_formatted}` : 'volle Erstattung des gezahlten Betrags';
+    return {
+      date: detail.received_at,
+      immediate: true,
+      lines: [
+        {
+          kind: 'action',
+          text: `Verspäteter Widerruf wird anerkannt (§ 356 Abs. 3 BGB, Belehrung möglicherweise mangelhaft): ${fullAmount}, Vertrag endet mit Zugang am ${received}, Zugang und Abo mit der Bestätigung.`,
+        },
+      ],
+    };
+  }
 
   if (decision.treatAsWithdrawal) {
     const fullAmount = detail.refund ? `volle Erstattung ${detail.refund.paid_amount_formatted}` : 'volle Erstattung des gezahlten Betrags';
@@ -620,11 +844,13 @@ function subscriptionLine(detail: CancellationRequestDetail, outcome: EffectiveO
   }
 
   const id = subscription.stripe_id;
-  if (subscription.ends_at && outcome.date && subscription.ends_at.slice(0, 10) <= outcome.date.slice(0, 10) && !outcome.immediate) {
+  const endsOn = subscription.ends_at ? calendarDayInBerlin(subscription.ends_at) : null;
+  const effectiveOn = outcome.date ? calendarDayInBerlin(outcome.date) : null;
+  if (endsOn && effectiveOn && endsOn <= effectiveOn && !outcome.immediate) {
     return { kind: 'note', text: `Stripe-Abo ${id} endet bereits am ${formatGermanDate(subscription.ends_at)} und bleibt so.` };
   }
 
-  if (outcome.immediate || (outcome.date && outcome.date.slice(0, 10) <= today)) {
+  if (outcome.immediate || (effectiveOn && effectiveOn <= today)) {
     return { kind: 'action', text: `Stripe-Abo ${id} wird sofort gekündigt (ohne anteilige Gutschrift).` };
   }
 
@@ -632,10 +858,7 @@ function subscriptionLine(detail: CancellationRequestDetail, outcome: EffectiveO
   return { kind: 'action', text: `Stripe-Abo-Ende: ${id} wird zum ${formatGermanDate(outcome.date)} gekündigt (cancel_at${bundle}).` };
 }
 
-function confirmRefundLine(
-  detail: CancellationRequestDetail,
-  decision: { importantReasonAccepted: boolean; treatAsWithdrawal: boolean }
-): PreviewLine {
+function confirmRefundLine(detail: CancellationRequestDetail, decision: ConfirmationDecision): PreviewLine {
   const { refund } = detail;
   if (!refund) {
     const reason = detail.refund_error ? `: ${detail.refund_error}` : '';
@@ -650,6 +873,13 @@ function confirmRefundLine(
     detail.type === 'ausserordentlich' && decision.importantReasonAccepted
       ? ' Der Betrag rechnet mit der Umdeutung; mit anerkanntem Grund rechnet der Server beim Bestätigen neu (Stichtag = Zugang).'
       : '';
+
+  if (decision.treatAsCancellation) {
+    return {
+      kind: 'note',
+      text: `Erstattung rechnet der Server beim Bestätigen als Kündigung neu (Stichtag ${formatGermanDate(detail.effective_date.recalculated)}). Wird beim Bestätigen NICHT ausgelöst, danach: ${refundCommand(detail.id)}.`,
+    };
+  }
 
   if (decision.treatAsWithdrawal) {
     return {
@@ -670,13 +900,44 @@ export interface ConfirmationOptions {
   importantReasonAccepted?: boolean;
   /** --als-widerruf (treat_as_withdrawal) */
   treatAsWithdrawal?: boolean;
+  /** --verspaeteten-widerruf-anerkennen (accept_late_withdrawal) */
+  acceptLateWithdrawal?: boolean;
+  /** --als-kuendigung (treat_as_cancellation) */
+  treatAsCancellation?: boolean;
   /** YYYY-MM-DD, für den Vergleich „Wirksamkeitsdatum liegt heute oder früher“ */
   today?: string;
+}
+
+interface ConfirmationDecision {
+  importantReasonAccepted: boolean;
+  treatAsWithdrawal: boolean;
+  acceptLateWithdrawal: boolean;
+  treatAsCancellation: boolean;
 }
 
 /** Entscheidungen, die der Server mit 422 unprocessable ablehnt; null, wenn die Kombination passt. */
 function unprocessableDecision(detail: CancellationRequestDetail, options: ConfirmationOptions): string | null {
   const label = `Kündigung #${detail.id}`;
+  const withdrawalDecision = options.acceptLateWithdrawal || options.treatAsCancellation;
+
+  if (withdrawalDecision && detail.type !== 'widerruf') {
+    return `--verspaeteten-widerruf-anerkennen und --als-kuendigung gelten nur für einen erklärten Widerruf, ${label} ist „${detail.type_label}“.`;
+  }
+  if (options.acceptLateWithdrawal && options.treatAsCancellation) {
+    return '--verspaeteten-widerruf-anerkennen und --als-kuendigung schließen sich aus.';
+  }
+  if (options.acceptLateWithdrawal && !hasWarning(detail.warnings, WARNING.withdrawalPeriodExtendedPossible)) {
+    return hasWarning(detail.warnings, WARNING.businessCustomer)
+      ? `${label} betrifft einen Firmenpass: kein Widerrufsrecht, nur --als-kuendigung.`
+      : `--verspaeteten-widerruf-anerkennen geht nur bei Warnung withdrawal_period_extended_possible (nach 14 Tagen, innerhalb von 12 Monaten und 14 Tagen).`;
+  }
+  const needsDecision = WITHDRAWAL_DECISION_WARNINGS.some((code) => hasWarning(detail.warnings, code));
+  if (needsDecision && !withdrawalDecision) {
+    const options = hasWarning(detail.warnings, WARNING.withdrawalPeriodExtendedPossible)
+      ? '--verspaeteten-widerruf-anerkennen (voll erstatten) oder --als-kuendigung'
+      : '--als-kuendigung (oder reject --unzulaessig=widerruf-ausgeschlossen)';
+    return `${label} ist ein Widerruf nach Fristablauf bzw. zu einem Firmenpass und braucht eine Entscheidung: ${options}.`;
+  }
 
   if (options.importantReasonAccepted && options.treatAsWithdrawal) {
     return '--wichtiger-grund-anerkannt und --als-widerruf schließen sich aus.';
@@ -700,7 +961,13 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
   const label = `Kündigung #${detail.id}`;
   const importantReasonAccepted = options.importantReasonAccepted === true;
   const treatAsWithdrawal = options.treatAsWithdrawal === true;
-  const today = options.today ?? new Date().toISOString().slice(0, 10);
+  const decision: ConfirmationDecision = {
+    importantReasonAccepted,
+    treatAsWithdrawal,
+    acceptLateWithdrawal: options.acceptLateWithdrawal === true,
+    treatAsCancellation: options.treatAsCancellation === true,
+  };
+  const today = options.today ?? todayInBerlin();
 
   if (detail.status === 'confirmed') {
     return {
@@ -732,6 +999,19 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
       lines: [
         { kind: 'blocked', text: `${unprocessable} Ein Aufruf mit --force wird mit 422 unprocessable abgelehnt.` },
         ...warningLines(detail.warnings),
+      ],
+    };
+  }
+
+  if (hasWarning(detail.warnings, WARNING.unmatched)) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: 'blocked',
+          text: `${label}: ${UNMATCHED_TEXT}. Ein Aufruf mit --force wird mit 409 unmatched abgelehnt. Kandidaten zeigt show ${detail.id}; gibt es keinen Vertrag, reject --unzulaessig=falscher-vertrag.`,
+        },
+        ...warningLines(detail.warnings, [WARNING.unmatched]),
       ],
     };
   }
@@ -783,7 +1063,7 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
     };
   }
 
-  const outcome = effectiveOutcome(detail, { importantReasonAccepted, treatAsWithdrawal });
+  const outcome = effectiveOutcome(detail, decision);
   if (detail.pass && !outcome.immediate && !outcome.date) {
     const error = detail.effective_date.recalculation_error ?? 'Wirksamkeitsdatum nicht berechenbar';
     const alternative =
@@ -811,7 +1091,7 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
 
   lines.push(
     { kind: 'action', text: `Bestätigungsmail an ${detail.participant.email}.` },
-    confirmRefundLine(detail, { importantReasonAccepted, treatAsWithdrawal })
+    confirmRefundLine(detail, decision)
   );
 
   if (options.adminNotes) {
@@ -823,6 +1103,7 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
     WARNING.importantReasonDecisionRequired,
     WARNING.bundleSubscription,
     ...(treatAsWithdrawal ? [WARNING.withdrawalPossible] : []),
+    ...(decision.acceptLateWithdrawal || decision.treatAsCancellation ? WITHDRAWAL_DECISION_WARNINGS : []),
   ];
   lines.push(...warningLines(detail.warnings, decided), EXECUTE_HINT);
   return { changesState: true, lines };
@@ -905,6 +1186,79 @@ export function buildRejectionPreview(detail: CancellationRequestDetail, rejecti
 // ---------------------------------------------------------------------------
 // refund
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Zuordnung (zuordnen <id> --pass=<user_pass_id>), AIDI-771
+// ---------------------------------------------------------------------------
+
+function passText(pass: CancellationPass): string {
+  const holder = pass.is_b2b ? pass.company_name : pass.holder_email ?? pass.holder_name;
+  return `Pass #${pass.user_pass_id} ${pass.name}${holder ? ` (${holder})` : ''}`;
+}
+
+export function buildAssignmentPreview(detail: CancellationRequestDetail, userPassId: number): ActionPreview {
+  const label = `Kündigung #${detail.id}`;
+
+  if (detail.status !== 'pending') {
+    return {
+      changesState: false,
+      lines: [
+        { kind: 'blocked', text: `${label} ist ${detail.status_label.toLowerCase()} (${detail.status}), zuordnen geht nur bei offenen Anfragen.` },
+        { kind: 'note', text: 'Ein Aufruf mit --force wird vom Server mit 409 (Konflikt) abgelehnt.' },
+      ],
+    };
+  }
+
+  if (detail.pass?.user_pass_id === userPassId) {
+    return {
+      changesState: false,
+      lines: [
+        { kind: 'note', text: `${label} ist bereits ${passText(detail.pass)} zugeordnet. Ein Aufruf mit --force ändert nichts (already_assigned).` },
+      ],
+    };
+  }
+
+  const candidates = detail.assignment?.candidates ?? [];
+  const candidate = candidates.find((pass) => pass.user_pass_id === userPassId);
+  const lines: PreviewLine[] = [
+    { kind: 'action', text: `${label} wird ${candidate ? passText(candidate) : `Pass #${userPassId}`} zugeordnet.` },
+    {
+      kind: 'note',
+      text: `Das Wirksamkeitsdatum rechnet der Server ab Eingang (${formatGermanDateTime(detail.received_at)}); das Konto wird Vertragspartner des Passes (bei Firmenlizenzen die Firma).`,
+    },
+    { kind: 'note', text: `Keine Mail, kein Stripe-Aufruf. Danach wie gewohnt: confirm ${detail.id}.` },
+  ];
+
+  if (detail.pass) {
+    lines.push({ kind: 'warning', text: `Ersetzt die bisherige Zuordnung zu ${passText(detail.pass)}.` });
+  }
+  if (!candidate) {
+    lines.push({
+      kind: 'warning',
+      text:
+        candidates.length > 0
+          ? `Pass #${userPassId} ist keiner der Kandidaten des gefundenen Kontos (${candidates.map((pass) => `#${pass.user_pass_id}`).join(', ')}). Bitte prüfen, ob die Erklärung wirklich diesen Vertrag meint.`
+          : `Zum Absender wurde kein Konto mit laufenden Verträgen gefunden. Bitte prüfen, ob die Erklärung wirklich Pass #${userPassId} meint (Name, E-Mail, Angabe zum Vertrag).`,
+    });
+  }
+
+  lines.push(...warningLines(detail.warnings, [WARNING.unmatched]), EXECUTE_HINT);
+  return { changesState: true, lines };
+}
+
+export function buildAssignmentResultLines(response: CancellationAssignmentResponse): PreviewLine[] {
+  const detail = response.data;
+  const lines: PreviewLine[] = [
+    response.meta.result === 'assigned'
+      ? { kind: 'action', text: `Kündigung #${detail.id} zugeordnet${detail.pass ? `: ${passText(detail.pass)}` : ''}.` }
+      : { kind: 'note', text: `Kündigung #${detail.id} war bereits diesem Pass zugeordnet, nichts geändert.` },
+    { kind: 'note', text: `Wirksam zum (berechnet ab Eingang): ${formatGermanDate(detail.effective_date.stored)}` },
+    { kind: 'hint', text: `Nächster Schritt: lernplattform kuendigungen confirm ${detail.id} --env=… (Vorschau).` },
+  ];
+
+  lines.splice(2, 0, ...warningLines(detail.warnings));
+  return lines;
+}
 
 export const REAL_MONEY_TEXT = 'ECHTES GELD: refund --force zahlt über Stripe an den Teilnehmer aus. Nicht umkehrbar.';
 
@@ -1162,13 +1516,17 @@ export function buildActionResultLines(response: CancellationActionResponse): Pr
 export const ERROR_CODE_HINTS: Record<string, string> = {
   conflict: 'Die Anfrage ist schon anders bearbeitet. Status mit show <id> prüfen.',
   unprocessable:
-    'Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht außerordentlicher Kündigung, --als-widerruf außerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer Kündigung oder einem fristgerechten Widerruf, oder keine Erstattung berechenbar.',
+    'Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht außerordentlicher Kündigung, --als-widerruf außerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer Kündigung oder einem fristgerechten Widerruf, ein Widerruf nach Fristablauf bzw. zu einem Firmenpass ohne --verspaeteten-widerruf-anerkennen oder --als-kuendigung, oder keine Erstattung berechenbar.',
   bundle_subscription_ambiguous:
     'Das Stripe-Abo bezahlt auch Pässe aus einem anderen Kauf. Erst in Stripe klären, welcher Vertrag endet, dann erneut bestätigen.',
   company_multi_seat_subscription: COMPANY_MULTI_SEAT_TEXT,
   paid_amount_unknown: `${LEDGER_MISSING_TEXT}: auf dem Server php artisan pass:backfill-payments, dann erneut.`,
   not_confirmed: 'Erst bestätigen (confirm <id>), dann erstatten.',
   refund_in_progress: 'Es läuft bereits eine Erstattung. Nach 10 Minuten erneut versuchen und vorher mit show <id> den Stand prüfen.',
+  unmatched:
+    'Die Erklärung kam über den Kündigungsbutton und ist keinem Vertrag zugeordnet. Kandidaten mit show <id>, dann zuordnen <id> --pass=<user_pass_id> --force. Ohne Vertrag: reject --unzulaessig=falscher-vertrag.',
+  duplicate:
+    'Für diesen Pass liegt schon eine offene Kündigung vor. Diese Erklärung ist dann ein Duplikat: reject <id> --unzulaessig=duplikat.',
   user_pass_missing:
     'Der Pass ist gelöscht: Bestätigen und Erstatten lassen sich nicht berechnen. Pass wiederherstellen oder die Erklärung als unzulässig ablehnen (reject --unzulaessig=falscher-vertrag), Geld manuell in Stripe klären.',
   refund_failed: 'Stripe hat die Erstattung abgelehnt. Bereits erstattete Anteile sind gebucht; Ursache in Stripe prüfen, dann refund <id> --force erneut (zahlt nicht doppelt).',

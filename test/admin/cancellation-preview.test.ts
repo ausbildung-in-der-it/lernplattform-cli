@@ -13,6 +13,8 @@ import {
   withdrawalDueDateFromReceipt,
   formatGermanDate,
   formatGermanDateTime,
+  formatReceiptDateTime,
+  todayInBerlin,
   type PreviewLine,
 } from '../../src/admin/cancellation-requests';
 import { cancellationDetail, confirmedDetail, executionWith, refundWith } from './fixtures';
@@ -517,6 +519,24 @@ describe('date formatting', () => {
     assert.equal(formatGermanDate('2026-06-10T23:30:00+02:00'), '10.06.2026');
     assert.equal(formatGermanDateTime('2026-06-10T09:12:00+02:00'), '10.06.2026 09:12');
     assert.equal(formatGermanDate(null), '—');
+  });
+
+  it('shows UTC timestamps of the API in German local time, summer and winter', () => {
+    assert.equal(formatGermanDateTime('2026-09-23T14:05:07.000000Z'), '23.09.2026 16:05');
+    assert.equal(formatGermanDateTime('2026-12-01T09:00:00Z'), '01.12.2026 10:00');
+    assert.equal(formatGermanDate('2026-09-23T22:30:00Z'), '24.09.2026');
+    assert.equal(formatGermanDate('2026-12-01'), '01.12.2026');
+  });
+
+  it('formats the receipt time like the web receipt', () => {
+    assert.equal(formatReceiptDateTime('2026-09-23T14:05:07.000000Z'), '23.09.2026, 16:05:07 Uhr');
+    assert.equal(formatReceiptDateTime('2026-09-23T16:05:07+02:00'), '23.09.2026, 16:05:07 Uhr');
+    assert.equal(formatReceiptDateTime(null), '—');
+  });
+
+  it('takes today and the day of receipt from German local time', () => {
+    assert.equal(todayInBerlin(new Date('2026-09-23T22:30:00Z')), '2026-09-24');
+    assert.equal(withdrawalDueDateFromReceipt('2026-09-23T22:30:00Z'), '2026-10-08');
   });
 
   it('computes the withdrawal due date 14 days after the day of receipt', () => {
