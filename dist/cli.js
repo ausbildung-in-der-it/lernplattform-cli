@@ -1358,9 +1358,9 @@ async function run3(argv) {
       case "create": {
         const lessonSlug = getRequiredArg(args, 0, "lesson-slug");
         const type = getOptionalFlag(args, "type");
-        const section = getOptionalFlag(args, "section");
+        const section2 = getOptionalFlag(args, "section");
         const data = getJsonData(args, "data");
-        if (!type || !section || !data) {
+        if (!type || !section2 || !data) {
           console.error(JSON.stringify({
             error: "Missing required fields",
             required: ["--type (textBlock|interactiveQuiz)", "--section", "--data (JSON object)"],
@@ -1372,7 +1372,7 @@ async function run3(argv) {
           }, null, 2));
           process.exit(1);
         }
-        const createData = { type, section, data };
+        const createData = { type, section: section2, data };
         if (args.flags.position !== void 0) {
           createData.position = parseInt(args.flags.position, 10);
         }
@@ -5614,6 +5614,1715 @@ TECHNICAL NOTES:
 `);
 }
 
+// src/admin/client.ts
+import { randomUUID } from "crypto";
+var ADMIN_API_PREFIX = "/api/admin/v1";
+var ADMIN_API_DEFAULT_TIMEOUT_MS = 3e4;
+var MACHINE_CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
+var AdminApiError = class extends Error {
+  constructor(detail, status, body) {
+    super(status > 0 ? `Admin-API Fehler (HTTP ${status}): ${detail}` : `Admin-API nicht erreichbar: ${detail}`);
+    this.detail = detail;
+    this.status = status;
+    this.body = body;
+    this.name = "AdminApiError";
+  }
+  detail;
+  status;
+  body;
+};
+var AdminApiClient = class {
+  apiBaseUrl;
+  token;
+  timeoutMs;
+  basicAuth;
+  basicAuthVariable;
+  constructor(options) {
+    const host = options.baseUrl.replace(/\/+$/, "");
+    this.apiBaseUrl = `${host}${options.apiPrefix ?? ADMIN_API_PREFIX}`;
+    this.token = options.token;
+    this.timeoutMs = options.timeoutMs ?? ADMIN_API_DEFAULT_TIMEOUT_MS;
+    this.basicAuth = options.basicAuth || void 0;
+    this.basicAuthVariable = options.basicAuthVariable ?? "LERNPLATTFORM_STAGING_BASIC_AUTH";
+  }
+  async get(path2, query = {}) {
+    return this.request("GET", this.buildUrl(path2, query), { Accept: "application/json" });
+  }
+  async post(path2, body = {}, options = {}) {
+    return this.request(
+      "POST",
+      this.buildUrl(path2),
+      {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "Idempotency-Key": options.idempotencyKey ?? randomUUID()
+      },
+      JSON.stringify(body)
+    );
+  }
+  buildUrl(path2, query = {}) {
+    const url = new URL(`${this.apiBaseUrl}/${path2.replace(/^\/+/, "")}`);
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== void 0) url.searchParams.set(key, String(value));
+    }
+    return url.toString();
+  }
+  async request(method, url, headers, body) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method,
+        body,
+        headers: { ...headers, ...this.authHeaders() },
+        signal: AbortSignal.timeout(this.timeoutMs)
+      });
+    } catch (error) {
+      throw transportError(error, url, this.timeoutMs);
+    }
+    const payload = await readBody(response);
+    if (isBasicAuthChallenge(response, payload)) {
+      throw new AdminApiError(this.basicAuthHint(), response.status, payload);
+    }
+    if (!response.ok) {
+      throw new AdminApiError(describeErrorBody(response.status, payload, response.statusText), response.status, payload);
+    }
+    return payload;
+  }
+  authHeaders() {
+    const bearer = `Bearer ${this.token}`;
+    if (!this.basicAuth) {
+      return { Authorization: bearer };
+    }
+    return {
+      Authorization: `Basic ${Buffer.from(this.basicAuth, "utf8").toString("base64")}`,
+      "X-API-Authorization": bearer
+    };
+  }
+  basicAuthHint() {
+    return this.basicAuth ? `Basic-Auth abgelehnt (nginx). Zugangsdaten in ${this.basicAuthVariable} pr\xFCfen (Format user:passwort).` : `Basic-Auth erforderlich (nginx). ${this.basicAuthVariable}=user:passwort setzen.`;
+  }
+};
+function isBasicAuthChallenge(response, payload) {
+  if (response.status !== 401 || payload !== void 0 && typeof payload !== "string") return false;
+  const challenge = response.headers.get("www-authenticate") ?? "";
+  return /^basic\b/i.test(challenge) || typeof payload === "string" && payload.includes("401 Authorization Required");
+}
+async function readBody(response) {
+  const text = await response.text();
+  if (!text) return void 0;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+function transportError(error, url, timeoutMs) {
+  const name = error instanceof Error ? error.name : "";
+  if (name === "TimeoutError" || name === "AbortError") {
+    return new AdminApiError(`Zeit\xFCberschreitung nach ${timeoutMs / 1e3} s (${url})`, 0);
+  }
+  const cause = error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return new AdminApiError(`${message}${cause} (${url})`, 0);
+}
+var AUTH_HINTS = {
+  "Authentication required": "Kein Token gesendet. LERNPLATTFORM_ADMIN_TOKEN bzw. LERNPLATTFORM_STAGING_ADMIN_TOKEN pr\xFCfen.",
+  "Invalid token": "Token unbekannt. Passt der Token zur Umgebung (--env, LERNPLATTFORM_BASE_URL)?",
+  "Token expired": "Token abgelaufen. Im Backoffice unter System > API Tokens einen neuen anlegen.",
+  "Insufficient scope": "Dem Token fehlt der Scope (cancellation-requests:read bzw. cancellation-requests:write).",
+  "Token owner is not a platform admin": "Der Token hat keinen Besitzer oder der Besitzer ist kein Plattform-Admin (verifizierte Admin-Domain)."
+};
+function describeErrorBody(status, body, statusText2 = "") {
+  if (typeof body === "string" && body.trim() !== "") return body.trim().slice(0, 300);
+  if (!body || typeof body !== "object") return statusText2 || `HTTP ${status}`;
+  const record = body;
+  const parts = [];
+  if (typeof record.message === "string") parts.push(record.message);
+  if (typeof record.error === "string" && !MACHINE_CODE_PATTERN.test(record.error)) {
+    const hint = AUTH_HINTS[record.error];
+    parts.push(hint ? `${record.error} (${hint})` : record.error);
+  }
+  if (typeof record.current_status === "string") parts.push(`Aktueller Status: ${record.current_status}`);
+  if (record.errors && typeof record.errors === "object") {
+    for (const [field, messages] of Object.entries(record.errors)) {
+      const list2 = Array.isArray(messages) ? messages.join(" ") : String(messages);
+      parts.push(`${field}: ${list2}`);
+    }
+  }
+  return parts.length > 0 ? parts.join("\n") : statusText2 || `HTTP ${status}`;
+}
+function adminApiErrorPayload(error) {
+  const payload = { error: error.message, status: error.status };
+  const body = error.body;
+  if (body && typeof body === "object") {
+    const record = body;
+    if (typeof record.error === "string" && MACHINE_CODE_PATTERN.test(record.error)) payload.code = record.error;
+    if (typeof record.current_status === "string") payload.current_status = record.current_status;
+    if (record.errors && typeof record.errors === "object") payload.errors = record.errors;
+  }
+  return payload;
+}
+
+// src/admin/config.ts
+var ADMIN_ENVIRONMENTS = ["production", "staging"];
+var DEFAULT_BASE_URLS = {
+  production: "https://app.ausbildung-in-der-it.de",
+  staging: "https://staging.ausbildung-in-der-it.de"
+};
+var TOKEN_VARIABLES = {
+  production: "LERNPLATTFORM_ADMIN_TOKEN",
+  staging: "LERNPLATTFORM_STAGING_ADMIN_TOKEN"
+};
+var BASIC_AUTH_VARIABLES = {
+  staging: "LERNPLATTFORM_STAGING_BASIC_AUTH"
+};
+var BASE_URL_VARIABLE = "LERNPLATTFORM_BASE_URL";
+var ENVIRONMENT_VARIABLE = "LERNPLATTFORM_ENV";
+var AdminUsageError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "AdminUsageError";
+  }
+};
+function parseEnvironment(value) {
+  if (value === void 0 || value === null || value === "") {
+    return "production";
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (ADMIN_ENVIRONMENTS.includes(normalized)) {
+    return normalized;
+  }
+  throw new AdminUsageError(
+    `Unbekannte Umgebung: ${String(value)}. Erlaubt: ${ADMIN_ENVIRONMENTS.join(", ")}.`
+  );
+}
+function resolveAdminApiTarget(envFlag, env = process.env) {
+  const environment = parseEnvironment(envFlag ?? env[ENVIRONMENT_VARIABLE]);
+  const environmentExplicit = isEnvironmentExplicit(envFlag, env);
+  const overrideUrl = env[BASE_URL_VARIABLE]?.trim();
+  const baseUrl = (overrideUrl || DEFAULT_BASE_URLS[environment]).replace(/\/+$/, "");
+  const tokenVariable = TOKEN_VARIABLES[environment];
+  const token = env[tokenVariable]?.trim();
+  if (!token) {
+    throw new AdminUsageError(
+      `${tokenVariable} ist nicht gesetzt (Umgebung ${environment}). Eigenen Admin-Token im Backoffice unter System > API Tokens anlegen (Besitzer: du, Scopes cancellation-requests:read und :write) und in ~/.config/lernplattform/.env eintragen.`
+    );
+  }
+  const basicAuthVariable = BASIC_AUTH_VARIABLES[environment];
+  const basicAuth = basicAuthVariable ? env[basicAuthVariable]?.trim() || void 0 : void 0;
+  if (basicAuth !== void 0 && !/^[^:]+:.+$/.test(basicAuth)) {
+    throw new AdminUsageError(`${basicAuthVariable} hat nicht das Format user:passwort.`);
+  }
+  return {
+    environment,
+    environmentExplicit,
+    baseUrl,
+    baseUrlOverridden: Boolean(overrideUrl),
+    token,
+    tokenVariable,
+    basicAuth,
+    basicAuthVariable
+  };
+}
+function isEnvironmentExplicit(envFlag, env = process.env) {
+  const requested = envFlag ?? env[ENVIRONMENT_VARIABLE];
+  return requested !== void 0 && requested !== null && requested !== true && String(requested).trim() !== "";
+}
+function requireExplicitEnvironment(target, operation) {
+  if (target.environmentExplicit) return;
+  throw new AdminUsageError(
+    `${operation} ver\xE4ndert Daten und braucht ein ausdr\xFCckliches Ziel: --env=production oder --env=staging (alternativ ${ENVIRONMENT_VARIABLE} setzen). Ohne Angabe wird nichts ausgef\xFChrt, auch keine Vorschau.`
+  );
+}
+function describeTarget(target) {
+  const environment = target.environment === "production" ? "PRODUCTION" : target.environment;
+  const defaulted = target.environmentExplicit === false ? ", Default ohne --env" : "";
+  const source = target.baseUrlOverridden ? `${BASE_URL_VARIABLE}, Token f\xFCr ${environment}` : environment;
+  const basicAuth = target.basicAuth ? ", mit Basic-Auth" : "";
+  return `${target.baseUrl} (${source}${defaulted}${basicAuth})`;
+}
+
+// src/admin/cancellation-requests.ts
+var CANCELLATION_STATUSES = ["pending", "confirmed", "rejected", "withdrawn"];
+var CANCELLATION_STATUS_FILTERS = [...CANCELLATION_STATUSES, "all"];
+var REJECTION_GROUNDS = {
+  duplikat: "duplicate",
+  "keine-erklaerung": "not_a_declaration",
+  "falscher-vertrag": "wrong_contract",
+  "widerruf-ausgeschlossen": "withdrawal_not_available"
+};
+var REJECTION_GROUND_LABELS = {
+  duplicate: "Doppelte Erkl\xE4rung zu einem Vertrag, der schon gek\xFCndigt ist oder gepr\xFCft wird",
+  not_a_declaration: "Keine K\xFCndigungserkl\xE4rung (Frage, Versehen, zur\xFCckgenommen)",
+  wrong_contract: "Betrifft keinen Vertrag des Absenders (falscher Pass, kein Vertragspartner)",
+  withdrawal_not_available: "Widerruf ausgeschlossen: Frist abgelaufen oder kein Verbrauchervertrag"
+};
+function parseRejectionGround(value) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized in REJECTION_GROUNDS) return REJECTION_GROUNDS[normalized];
+  return Object.values(REJECTION_GROUNDS).includes(normalized) ? normalized : null;
+}
+var WARNING = {
+  effectiveDateInPast: "effective_date_in_past",
+  pendingLongerThan14Days: "pending_longer_than_14_days",
+  subscriptionAlreadyCanceled: "subscription_already_canceled",
+  accessContinuesAfterEffectiveDate: "access_continues_after_effective_date",
+  subscriptionCancelAtMissing: "subscription_cancel_at_missing",
+  subscriptionEndDiffersFromEffectiveDate: "subscription_end_differs_from_effective_date",
+  subscriptionNotFound: "subscription_not_found",
+  userPassMissing: "user_pass_missing",
+  paidAmountUnknown: "paid_amount_unknown",
+  contractPriceUnknown: "contract_price_unknown",
+  withdrawalRefundDue: "withdrawal_refund_due",
+  importantReasonDecisionRequired: "important_reason_decision_required",
+  bundleSubscription: "bundle_subscription",
+  bundleSubscriptionAmbiguous: "bundle_subscription_ambiguous",
+  companyMultiSeatSubscription: "company_multi_seat_subscription",
+  refundOutstanding: "refund_outstanding",
+  subscriptionCancellationFailed: "subscription_cancellation_failed",
+  refundFailed: "refund_failed",
+  withdrawalPossible: "withdrawal_possible"
+};
+var STRIPE_CANCEL_MISSING_WARNING = WARNING.subscriptionCancelAtMissing;
+var CRITICAL_WARNINGS = [
+  WARNING.subscriptionCancelAtMissing,
+  WARNING.subscriptionCancellationFailed,
+  WARNING.subscriptionNotFound,
+  WARNING.refundFailed,
+  WARNING.paidAmountUnknown,
+  WARNING.bundleSubscriptionAmbiguous,
+  WARNING.companyMultiSeatSubscription
+];
+var COMPANY_MULTI_SEAT_TEXT = "Firmen-Abo mit mehreren Lizenzen, Teilk\xFCndigung ist noch nicht automatisiert (AIDI-776). In Stripe die Menge zum Wirksamkeitsdatum manuell reduzieren und den Zugang nur dieser Lizenz beenden.";
+var LEDGER_MISSING_TEXT = "Best\xE4tigen gesperrt, Zahlungsbuch fehlt (Backfill)";
+var BASE_PATH = "/cancellation-requests";
+async function listCancellationRequests(client, options = {}) {
+  return client.get(BASE_PATH, {
+    status: options.status,
+    page: options.page,
+    per_page: options.perPage
+  });
+}
+async function getCancellationRequest(client, id) {
+  return client.get(`${BASE_PATH}/${id}`);
+}
+async function confirmCancellationRequest(client, id, options = {}) {
+  const body = {};
+  if (options.adminNotes) body.admin_notes = options.adminNotes;
+  if (options.importantReasonAccepted) body.important_reason_accepted = true;
+  if (options.treatAsWithdrawal) body.treat_as_withdrawal = true;
+  return client.post(`${BASE_PATH}/${id}/confirmation`, body, {
+    idempotencyKey: options.idempotencyKey
+  });
+}
+async function rejectCancellationRequest(client, id, rejectionReason, rejectionGround, options = {}) {
+  return client.post(
+    `${BASE_PATH}/${id}/rejection`,
+    { rejection_ground: rejectionGround, rejection_reason: rejectionReason },
+    { idempotencyKey: options.idempotencyKey }
+  );
+}
+async function refundCancellationRequest(client, id, options = {}) {
+  return client.post(`${BASE_PATH}/${id}/refund`, {}, { idempotencyKey: options.idempotencyKey });
+}
+var DASH = "\u2014";
+function formatGermanDate(value) {
+  if (!value) return DASH;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return value;
+  return `${match[3]}.${match[2]}.${match[1]}`;
+}
+function formatGermanDateTime(value) {
+  if (!value) return DASH;
+  const time = /T(\d{2}:\d{2})/.exec(value);
+  return time ? `${formatGermanDate(value)} ${time[1]}` : formatGermanDate(value);
+}
+function formatEuroCents(cents) {
+  return `${new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(cents / 100)} \u20AC`;
+}
+function withdrawalDueDateFromReceipt(receivedAt) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(receivedAt);
+  if (!match) return null;
+  const due = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + WITHDRAWAL_PERIOD_DAYS));
+  return due.toISOString().slice(0, 10);
+}
+var WITHDRAWAL_PERIOD_DAYS = 14;
+var PAYMENT_MODE_LABELS = {
+  free: "kostenlos",
+  one_time: "Einmalzahlung",
+  subscription: "Abo"
+};
+function paymentModeLabel(mode) {
+  if (!mode) return DASH;
+  return PAYMENT_MODE_LABELS[mode] ?? mode;
+}
+var SHORT_WARNING_LABELS = {
+  [WARNING.effectiveDateInPast]: "datum-vergangen",
+  [WARNING.pendingLongerThan14Days]: "offen>14d",
+  [WARNING.subscriptionAlreadyCanceled]: "abo-gekuendigt",
+  [WARNING.accessContinuesAfterEffectiveDate]: "zugang-laenger",
+  [WARNING.subscriptionCancelAtMissing]: "STRIPE-KUENDIGUNG-FEHLT",
+  [WARNING.subscriptionEndDiffersFromEffectiveDate]: "abo-ende-abweichend",
+  [WARNING.subscriptionNotFound]: "ABO-NICHT-IN-STRIPE",
+  [WARNING.userPassMissing]: "pass-geloescht",
+  [WARNING.paidAmountUnknown]: "ZAHLUNGSBUCH-FEHLT",
+  [WARNING.contractPriceUnknown]: "vertragspreis-fehlt",
+  [WARNING.withdrawalRefundDue]: "widerruf-erstatten",
+  [WARNING.importantReasonDecisionRequired]: "wichtiger-grund-offen",
+  [WARNING.bundleSubscription]: "abo-buendel",
+  [WARNING.bundleSubscriptionAmbiguous]: "ABO-BUENDEL-UNKLAR",
+  [WARNING.companyMultiSeatSubscription]: "FIRMA-MEHRLIZENZ",
+  [WARNING.refundOutstanding]: "erstattung-offen",
+  [WARNING.subscriptionCancellationFailed]: "ABO-KUENDIGUNG-FEHLGESCHLAGEN",
+  [WARNING.refundFailed]: "ERSTATTUNG-FEHLGESCHLAGEN",
+  [WARNING.withdrawalPossible]: "widerruf-moeglich"
+};
+function shortWarningLabel(code) {
+  return SHORT_WARNING_LABELS[code] ?? code;
+}
+function isWithdrawal(item) {
+  return item.type === "widerruf" || Boolean(item.withdrawal_recognized_at);
+}
+function typeText(item) {
+  return item.withdrawal_recognized_at ? `${item.type_label}, als Widerruf behandelt` : item.type_label;
+}
+function hasWarning(warnings, code) {
+  return warnings.some((warning) => warning.code === code);
+}
+var SHORT_REFUND_STATUS_LABELS = {
+  none: DASH,
+  pending: "l\xE4uft",
+  refunded: "erstattet",
+  partially_refunded: "REST-OFFEN",
+  failed: "FEHLGESCHLAGEN"
+};
+var SUBSCRIPTION_CANCELLATION_LABELS = {
+  scheduled: "zum Wirksamkeitsdatum vorgemerkt (cancel_at)",
+  already_scheduled: "war schon zu einem fr\xFCheren Termin vorgemerkt",
+  canceled_immediately: "sofort gek\xFCndigt",
+  already_ended: "war bereits beendet",
+  not_found: "in Stripe nicht gefunden, nichts gek\xFCndigt",
+  bundle_skipped: "nicht gek\xFCndigt (alte B\xFCndel-Regel): Abo bezahlt mehrere P\xE4sse, in Stripe pr\xFCfen",
+  failed: "FEHLGESCHLAGEN, in Stripe k\xFCndigen"
+};
+function subscriptionCancellationLabel(status) {
+  if (!status) return DASH;
+  return SUBSCRIPTION_CANCELLATION_LABELS[status] ?? status;
+}
+function importantReasonText(detail) {
+  if (detail.type !== "ausserordentlich" || detail.withdrawal_recognized_at) return null;
+  if (detail.important_reason_accepted === true) return "anerkannt, sofortige Wirkung (\xA7 314 BGB)";
+  if (detail.important_reason_accepted === false) return "nicht anerkannt, als ordentliche K\xFCndigung behandelt (Umdeutung, \xA7 140 BGB)";
+  return detail.status === "pending" ? "noch nicht entschieden (confirm --wichtiger-grund-anerkannt)" : DASH;
+}
+var EXECUTE_HINT = { kind: "hint", text: "Zum Ausf\xFChren: denselben Befehl mit --force wiederholen." };
+function warningLines(warnings, skip = []) {
+  return warnings.filter((warning) => !skip.includes(warning.code)).map((warning) => ({ kind: "warning", text: `[${warning.code}] ${warning.message}` }));
+}
+function reviewedByText(detail) {
+  const { reviewed_at: reviewedAt, reviewed_by: reviewedBy } = detail.review;
+  const reviewer = reviewedBy ? reviewedBy.name || reviewedBy.email : "";
+  const parts = [reviewedAt ? `am ${formatGermanDateTime(reviewedAt)}` : "", reviewer ? `von ${reviewer}` : ""];
+  const text = parts.filter(Boolean).join(" ");
+  return text ? ` (${text})` : "";
+}
+function refundCommand(id) {
+  return `lernplattform kuendigungen refund ${id}`;
+}
+function isLedgerMissing(detail) {
+  return detail.refund?.is_paid_amount_estimated === true;
+}
+function ledgerBlockedLine(action) {
+  const verb = action === "confirm" ? "Best\xE4tigen" : "Erstatten";
+  return {
+    kind: "blocked",
+    text: `${verb} gesperrt, Zahlungsbuch fehlt (Backfill): Der gezahlte Betrag ist unbekannt. Erst auf dem Server die Zahlungen nachladen (php artisan pass:backfill-payments), dann erneut. Ein Aufruf mit --force wird mit 409 paid_amount_unknown abgelehnt.`
+  };
+}
+function effectiveOutcome(detail, decision) {
+  const received = formatGermanDate(detail.received_at);
+  const { recalculated, stored } = detail.effective_date;
+  const { importantReasonAccepted } = decision;
+  if (decision.treatAsWithdrawal) {
+    const fullAmount = detail.refund ? `volle Erstattung ${detail.refund.paid_amount_formatted}` : "volle Erstattung des gezahlten Betrags";
+    const due = withdrawalDueDateFromReceipt(detail.received_at);
+    return {
+      date: detail.received_at,
+      immediate: true,
+      lines: [
+        {
+          kind: "action",
+          text: `Wird als Widerruf behandelt: ${fullAmount}, Vertrag endet mit Zugang am ${received}, Zugang und Abo enden mit der Best\xE4tigung, Erstattung f\xE4llig bis ${formatGermanDate(due)} (\xA7\xA7 355, 357 BGB).`
+        }
+      ]
+    };
+  }
+  if (detail.type === "widerruf") {
+    return {
+      date: detail.received_at,
+      immediate: true,
+      lines: [
+        {
+          kind: "action",
+          text: `Widerruf (\xA7 355 BGB): Der Vertrag endet mit Zugang am ${received}, Zugang und Abo mit der Best\xE4tigung, der gezahlte Betrag ist vollst\xE4ndig zu erstatten.`
+        }
+      ]
+    };
+  }
+  if (detail.type === "ausserordentlich" && importantReasonAccepted) {
+    return {
+      date: detail.received_at,
+      immediate: true,
+      lines: [
+        {
+          kind: "action",
+          text: `Wichtiger Grund wird anerkannt (\xA7 314 BGB): sofortige Wirkung, Wirksamkeitsdatum = Zugang am ${received}.`
+        }
+      ]
+    };
+  }
+  const regular = detail.effective_date.recalculated_ends_regularly ? ", das ist das regul\xE4re Vertragsende" : "";
+  const differs = stored && recalculated && stored !== recalculated ? ` (gespeichert war ${formatGermanDate(stored)})` : "";
+  if (detail.type === "ausserordentlich") {
+    return {
+      date: recalculated,
+      immediate: false,
+      lines: [
+        {
+          kind: "action",
+          text: `Au\xDFerordentliche K\xFCndigung ohne anerkannten wichtigen Grund: wird als ordentliche K\xFCndigung zum ${formatGermanDate(recalculated)} behandelt (Umdeutung, \xA7 140 BGB${regular})${differs}.`
+        },
+        { kind: "note", text: "Mit --wichtiger-grund-anerkannt: sofortige Wirkung zum Zugang der K\xFCndigung." }
+      ]
+    };
+  }
+  return {
+    date: recalculated,
+    immediate: false,
+    lines: [
+      {
+        kind: "action",
+        text: `Wirksam zum ${formatGermanDate(recalculated)} (\xA7 5 FernUSG${regular})${differs}.`
+      }
+    ]
+  };
+}
+function accessLine(detail, outcome) {
+  if (!detail.pass) return null;
+  if (outcome.immediate) {
+    return { kind: "action", text: "Zugang endet sofort mit der Best\xE4tigung (Pass-Status canceled)." };
+  }
+  const validUntil = detail.pass.valid_until;
+  if (validUntil && outcome.date && validUntil.slice(0, 10) <= outcome.date.slice(0, 10)) {
+    return { kind: "note", text: `Zugang endet ohnehin am ${formatGermanDate(validUntil)}, bleibt unver\xE4ndert.` };
+  }
+  return { kind: "action", text: `Zugangsende: ${formatGermanDate(outcome.date)} 23:59 (bisher g\xFCltig ${validUntil ? `bis ${formatGermanDate(validUntil)}` : "unbegrenzt"}).` };
+}
+function bundleLine(detail, outcome) {
+  const ids = detail.subscription_cancellation?.bundle_user_pass_ids ?? [];
+  if (ids.length === 0) return null;
+  const when = outcome.immediate ? "mit der Best\xE4tigung" : `zum ${formatGermanDate(outcome.date)}`;
+  return {
+    kind: "action",
+    text: `B\xFCndel (ein Vertrag): Zugang der P\xE4sse ${ids.map((id) => `#${id}`).join(", ")} endet ebenfalls ${when}, die Mail nennt sie.`
+  };
+}
+function subscriptionLine(detail, outcome, today) {
+  const { subscription } = detail;
+  if (!subscription) {
+    return detail.payment_mode === "subscription" ? { kind: "note", text: "Stripe-Abo: keine lokale Abo-Zeile. Die Plattform sucht das Abo \xFCber die Abo-ID am Pass und k\xFCndigt es dort." } : null;
+  }
+  const id = subscription.stripe_id;
+  if (subscription.ends_at && outcome.date && subscription.ends_at.slice(0, 10) <= outcome.date.slice(0, 10) && !outcome.immediate) {
+    return { kind: "note", text: `Stripe-Abo ${id} endet bereits am ${formatGermanDate(subscription.ends_at)} und bleibt so.` };
+  }
+  if (outcome.immediate || outcome.date && outcome.date.slice(0, 10) <= today) {
+    return { kind: "action", text: `Stripe-Abo ${id} wird sofort gek\xFCndigt (ohne anteilige Gutschrift).` };
+  }
+  const bundle = (detail.subscription_cancellation?.bundle_user_pass_ids ?? []).length > 0 ? ", f\xFCr das ganze B\xFCndel" : "";
+  return { kind: "action", text: `Stripe-Abo-Ende: ${id} wird zum ${formatGermanDate(outcome.date)} gek\xFCndigt (cancel_at${bundle}).` };
+}
+function confirmRefundLine(detail, decision) {
+  const { refund: refund2 } = detail;
+  if (!refund2) {
+    const reason = detail.refund_error ? `: ${detail.refund_error}` : "";
+    return { kind: "note", text: `Keine Erstattung berechnet${reason}` };
+  }
+  const basis = [`bezahlt ${refund2.paid_amount_formatted}`, `geschuldet ${refund2.owed_amount_formatted}`];
+  if (refund2.is_withdrawal) basis.push("Widerruf: voller Betrag");
+  if (refund2.is_contract_price_estimated) basis.push("Vertragspreis fehlt, Katalogpreis angesetzt");
+  const recalculation = detail.type === "ausserordentlich" && decision.importantReasonAccepted ? " Der Betrag rechnet mit der Umdeutung; mit anerkanntem Grund rechnet der Server beim Best\xE4tigen neu (Stichtag = Zugang)." : "";
+  if (decision.treatAsWithdrawal) {
+    return {
+      kind: "note",
+      text: `Erstattung als Widerruf: voller gezahlter Betrag ${refund2.paid_amount_formatted} (bisherige Berechnung als K\xFCndigung: ${refund2.refund_amount_formatted}). Wird beim Best\xE4tigen NICHT ausgel\xF6st, danach: ${refundCommand(detail.id)}.`
+    };
+  }
+  return {
+    kind: "note",
+    text: `Berechnete Erstattung: ${refund2.refund_amount_formatted} (${basis.join(", ")}). Wird beim Best\xE4tigen NICHT ausgel\xF6st, danach: ${refundCommand(detail.id)}.${recalculation}`
+  };
+}
+function unprocessableDecision(detail, options) {
+  const label = `K\xFCndigung #${detail.id}`;
+  if (options.importantReasonAccepted && options.treatAsWithdrawal) {
+    return "--wichtiger-grund-anerkannt und --als-widerruf schlie\xDFen sich aus.";
+  }
+  if (options.importantReasonAccepted && detail.type !== "ausserordentlich") {
+    return `--wichtiger-grund-anerkannt gilt nur f\xFCr au\xDFerordentliche K\xFCndigungen, ${label} ist \u201E${detail.type_label}\u201C.`;
+  }
+  if (options.treatAsWithdrawal && detail.type === "widerruf") {
+    return `${label} ist bereits ein Widerruf, --als-widerruf ist nicht n\xF6tig.`;
+  }
+  if (options.treatAsWithdrawal && detail.pass?.is_b2b) {
+    return `${label} betrifft einen Firmenpass: Ein Widerrufsrecht haben nur Verbraucher (\xA7\xA7 312g, 355 BGB), --als-widerruf geht nicht.`;
+  }
+  if (options.treatAsWithdrawal && !hasWarning(detail.warnings, WARNING.withdrawalPossible)) {
+    return `--als-widerruf geht nur, wenn die Anfrage innerhalb von 14 Tagen nach dem Kauf einging (Warnung withdrawal_possible fehlt bei ${label}).`;
+  }
+  return null;
+}
+function buildConfirmationPreview(detail, options = {}) {
+  const label = `K\xFCndigung #${detail.id}`;
+  const importantReasonAccepted = options.importantReasonAccepted === true;
+  const treatAsWithdrawal = options.treatAsWithdrawal === true;
+  const today = options.today ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  if (detail.status === "confirmed") {
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `${label} ist bereits best\xE4tigt${reviewedByText(detail)}.` },
+        { kind: "note", text: "Ein Aufruf mit --force \xE4ndert nichts (Server antwortet already_confirmed, keine Mail, kein Stripe-Aufruf)." },
+        ...refundReminder(detail),
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
+  if (detail.status !== "pending") {
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `${label} ist ${detail.status_label.toLowerCase()} (${detail.status}) und kann nicht best\xE4tigt werden.` },
+        { kind: "note", text: "Ein Aufruf mit --force wird vom Server mit 409 (Konflikt) abgelehnt." },
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
+  const unprocessable = unprocessableDecision(detail, options);
+  if (unprocessable) {
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `${unprocessable} Ein Aufruf mit --force wird mit 422 unprocessable abgelehnt.` },
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
+  if (!detail.pass) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `${label}: Der Pass ist gel\xF6scht, Wirksamkeitsdatum und Erstattung lassen sich nicht berechnen. Ein Aufruf mit --force wird mit 409 user_pass_missing abgelehnt. Pass wiederherstellen oder als unzul\xE4ssig ablehnen (reject --unzulaessig=falscher-vertrag).`
+        },
+        ...warningLines(detail.warnings, [WARNING.userPassMissing])
+      ]
+    };
+  }
+  if (hasWarning(detail.warnings, WARNING.companyMultiSeatSubscription)) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `Best\xE4tigen gesperrt: ${COMPANY_MULTI_SEAT_TEXT} Ein Aufruf mit --force wird mit 409 company_multi_seat_subscription abgelehnt.`
+        },
+        ...warningLines(detail.warnings, [WARNING.companyMultiSeatSubscription])
+      ]
+    };
+  }
+  if (detail.subscription_cancellation?.bundle_ambiguous || hasWarning(detail.warnings, WARNING.bundleSubscriptionAmbiguous)) {
+    const ids = (detail.subscription_cancellation?.bundle_user_pass_ids ?? []).map((id) => `#${id}`).join(", ");
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `Best\xE4tigen gesperrt: Das Stripe-Abo bezahlt auch P\xE4sse aus einem anderen Kauf${ids ? ` (${ids})` : ""}, welcher Vertrag endet, ist nicht eindeutig. Erst in Stripe kl\xE4ren. Ein Aufruf mit --force wird mit 409 bundle_subscription_ambiguous abgelehnt.`
+        },
+        ...warningLines(detail.warnings, [WARNING.bundleSubscriptionAmbiguous])
+      ]
+    };
+  }
+  if (isLedgerMissing(detail)) {
+    return {
+      changesState: false,
+      lines: [ledgerBlockedLine("confirm"), ...warningLines(detail.warnings, [WARNING.paidAmountUnknown])]
+    };
+  }
+  const outcome = effectiveOutcome(detail, { importantReasonAccepted, treatAsWithdrawal });
+  if (detail.pass && !outcome.immediate && !outcome.date) {
+    const error = detail.effective_date.recalculation_error ?? "Wirksamkeitsdatum nicht berechenbar";
+    const alternative = detail.type === "ausserordentlich" ? " Nur mit --wichtiger-grund-anerkannt best\xE4tigbar (sofortige Wirkung)." : "";
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `${label} l\xE4sst sich so nicht best\xE4tigen: ${error} Ein Aufruf mit --force wird mit 422 unprocessable abgelehnt.${alternative}` },
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
+  const lines = [
+    { kind: "action", text: `${label} (${typeText(detail)}) wird best\xE4tigt.` },
+    ...outcome.lines
+  ];
+  const access = accessLine(detail, outcome);
+  if (access) lines.push(access);
+  const bundle = bundleLine(detail, outcome);
+  if (bundle) lines.push(bundle);
+  const subscription = subscriptionLine(detail, outcome, today);
+  if (subscription) lines.push(subscription);
+  lines.push(
+    { kind: "action", text: `Best\xE4tigungsmail an ${detail.participant.email}.` },
+    confirmRefundLine(detail, { importantReasonAccepted, treatAsWithdrawal })
+  );
+  if (options.adminNotes) {
+    lines.push({ kind: "note", text: `Interne Notiz: ${options.adminNotes}` });
+  }
+  const decided = [
+    WARNING.importantReasonDecisionRequired,
+    WARNING.bundleSubscription,
+    ...treatAsWithdrawal ? [WARNING.withdrawalPossible] : []
+  ];
+  lines.push(...warningLines(detail.warnings, decided), EXECUTE_HINT);
+  return { changesState: true, lines };
+}
+function refundReminder(detail) {
+  const outstanding = detail.refund_execution?.outstanding_cents;
+  if (detail.status !== "confirmed" || !outstanding || outstanding <= 0) {
+    return [];
+  }
+  return [
+    {
+      kind: "hint",
+      text: `Erstattung noch offen: ${formatEuroCents(outstanding)}. Vorschau: ${refundCommand(detail.id)}`
+    }
+  ];
+}
+var VALID_CANCELLATION_TEXT = "Eine wirksame ordentliche K\xFCndigung wird best\xE4tigt, nicht abgelehnt; eine au\xDFerordentliche ohne wichtigen Grund ebenso (Umdeutung). Ablehnen nur bei einer unzul\xE4ssigen Erkl\xE4rung.";
+function buildRejectionPreview(detail, rejectionReason, ground) {
+  const label = `K\xFCndigung #${detail.id}`;
+  if (detail.status === "rejected") {
+    const storedReason = detail.review.rejection_reason ? [{ kind: "note", text: `Gespeicherte Begr\xFCndung: ${detail.review.rejection_reason}` }] : [];
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `${label} ist bereits abgelehnt${reviewedByText(detail)}.` },
+        { kind: "note", text: "Ein Aufruf mit --force \xE4ndert nichts (Server antwortet already_rejected, keine Mail)." },
+        ...storedReason,
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
+  if (detail.status !== "pending") {
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `${label} ist ${detail.status_label.toLowerCase()} (${detail.status}) und kann nicht abgelehnt werden.` },
+        { kind: "note", text: "Ein Aufruf mit --force wird vom Server mit 409 (Konflikt) abgelehnt." },
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
+  if (ground === "withdrawal_not_available" && detail.type !== "widerruf") {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `--unzulaessig=widerruf-ausgeschlossen passt nur zu einem Widerruf, ${label} ist \u201E${detail.type_label}\u201C. ${VALID_CANCELLATION_TEXT} Ein Aufruf mit --force wird mit 422 unprocessable abgelehnt.`
+        },
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
+  return {
+    changesState: true,
+    lines: [
+      { kind: "warning", text: VALID_CANCELLATION_TEXT },
+      { kind: "action", text: `${label} (${typeText(detail)}) wird als unzul\xE4ssig abgelehnt: ${REJECTION_GROUND_LABELS[ground]} (${ground}).` },
+      { kind: "action", text: `Ablehnungsmail an ${detail.participant.email} mit Begr\xFCndung: \u201E${rejectionReason}\u201C` },
+      ...warningLines(detail.warnings),
+      EXECUTE_HINT
+    ]
+  };
+}
+var REAL_MONEY_TEXT = "ECHTES GELD: refund --force zahlt \xFCber Stripe an den Teilnehmer aus. Nicht umkehrbar.";
+function refundAmountLines(detail, refund2) {
+  const execution = detail.refund_execution;
+  const alreadyRefunded = execution.refunded_cents > 0 ? `${execution.refunded_formatted} (Stripe-Refunds: ${execution.stripe_refund_ids.join(", ") || DASH})` : execution.refunded_formatted;
+  const estimatedPrice = refund2.is_contract_price_estimated ? " (Vertragspreis fehlt, Katalogpreis angesetzt)" : "";
+  const lines = [
+    { kind: "note", text: `Betrag laut Berechnung: ${refund2.refund_amount_formatted} (bezahlt ${refund2.paid_amount_formatted}, geschuldet ${refund2.owed_amount_formatted}${estimatedPrice})` },
+    { kind: "note", text: `Bereits erstattet: ${alreadyRefunded}` }
+  ];
+  if (refund2.calculation_explanation) {
+    lines.push({ kind: "note", text: `Berechnung: ${refund2.calculation_explanation}` });
+  }
+  if (refund2.is_withdrawal) {
+    const due = detail.withdrawal_refund_due_at ? ` sp\xE4testens bis ${formatGermanDate(detail.withdrawal_refund_due_at)}` : "";
+    lines.push({ kind: "note", text: `Widerruf: voller Betrag${due} (\xA7 357 BGB).` });
+  }
+  return lines;
+}
+function outstandingCents(detail, refund2) {
+  return detail.refund_execution.outstanding_cents ?? Math.max(0, refund2.refund_amount_cents - detail.refund_execution.refunded_cents);
+}
+function buildRefundPreview(detail) {
+  const label = `K\xFCndigung #${detail.id}`;
+  const execution = detail.refund_execution;
+  if (detail.status !== "confirmed") {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `${label} ist ${detail.status_label.toLowerCase()} (${detail.status}). Erstattet wird erst nach der Best\xE4tigung; ein Aufruf mit --force wird mit 409 not_confirmed abgelehnt.`
+        },
+        ...detail.status === "pending" ? [{ kind: "hint", text: `Erst best\xE4tigen: lernplattform kuendigungen confirm ${detail.id}` }] : []
+      ]
+    };
+  }
+  if (!detail.pass) {
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `${label}: Der Pass ist gel\xF6scht, die Erstattung l\xE4sst sich nicht berechnen. Ein Aufruf mit --force wird mit 409 user_pass_missing abgelehnt.` },
+        ...warningLines(detail.warnings, [WARNING.userPassMissing])
+      ]
+    };
+  }
+  if (execution.status === "refunded" && (execution.outstanding_cents ?? 0) <= 0) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `${label} ist bereits erstattet: ${execution.refunded_formatted} am ${formatGermanDateTime(execution.refunded_at)} (Stripe-Refunds: ${execution.stripe_refund_ids.join(", ") || DASH}).`
+        },
+        { kind: "note", text: "Ein Aufruf mit --force \xE4ndert nichts (Server antwortet already_refunded, kein Stripe-Aufruf)." }
+      ]
+    };
+  }
+  const { refund: refund2 } = detail;
+  if (!refund2) {
+    const reason = detail.refund_error ? `: ${detail.refund_error}` : ".";
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `Keine Erstattung berechenbar${reason} Ein Aufruf mit --force wird mit 422 unprocessable abgelehnt.` },
+        ...warningLines(detail.warnings)
+      ]
+    };
+  }
+  if (refund2.is_paid_amount_estimated) {
+    return {
+      changesState: false,
+      lines: [ledgerBlockedLine("refund"), ...warningLines(detail.warnings, [WARNING.paidAmountUnknown])]
+    };
+  }
+  const outstanding = outstandingCents(detail, refund2);
+  if (outstanding <= 0) {
+    return {
+      changesState: false,
+      lines: [
+        ...refundAmountLines(detail, refund2),
+        { kind: "blocked", text: `Nichts zu erstatten: offen ${formatEuroCents(0)}. Ein Aufruf mit --force meldet nothing_to_refund, kein Stripe-Aufruf.` }
+      ]
+    };
+  }
+  const lines = [
+    { kind: "blocked", text: REAL_MONEY_TEXT },
+    {
+      kind: "action",
+      text: `${label}: ${formatEuroCents(outstanding)} werden \xFCber Stripe auf das beim Kauf genutzte Zahlungsmittel erstattet (Teilnehmer ${detail.participant.email}).`
+    },
+    ...refundAmountLines(detail, refund2),
+    { kind: "action", text: `Offen, wird jetzt erstattet: ${formatEuroCents(outstanding)}` },
+    {
+      kind: "note",
+      text: `Stripe-Zahlungen: verteilt auf die Zahlungen des Passes (UserPass #${detail.pass.user_pass_id}) im Zahlungsbuch, neueste zuerst, je h\xF6chstens der noch nicht erstattete Anteil. Die API nennt die Zahlungen nicht einzeln; in Stripe tragen die Refunds die Metadaten cancellation_request_id=${detail.id}.`
+    }
+  ];
+  if (execution.status === "partially_refunded") {
+    lines.push({
+      kind: "warning",
+      text: `Nach der Erstattung vom ${formatGermanDateTime(execution.refunded_at)} ist noch eine Zahlung eingegangen; --force zahlt nur den Rest, bereits Erstattetes nicht doppelt.`
+    });
+  }
+  if (execution.status === "failed") {
+    lines.push({
+      kind: "warning",
+      text: `Letzter Versuch fehlgeschlagen: ${execution.error ?? "unbekannter Fehler"}. --force versucht es erneut; bereits erstattete Anteile werden nicht doppelt ausgezahlt.`
+    });
+  }
+  if (execution.status === "pending") {
+    lines.push({
+      kind: "warning",
+      text: "Eine Erstattung l\xE4uft bereits. Ein Aufruf mit --force wird mit 409 refund_in_progress abgelehnt, solange der Lauf j\xFCnger als 10 Minuten ist."
+    });
+  }
+  lines.push(...warningLines(detail.warnings, [WARNING.refundFailed, WARNING.refundOutstanding]), {
+    kind: "hint",
+    text: "Zum Ausf\xFChren: denselben Befehl mit --force wiederholen. Nur nach ausdr\xFCcklicher Freigabe, es flie\xDFt echtes Geld."
+  });
+  return { changesState: true, lines };
+}
+var REFUND_RESULT_TEXTS = {
+  refunded: {
+    changed: true,
+    text: (detail) => `K\xFCndigung #${detail.id}: ${detail.refund_execution.refunded_formatted} \xFCber Stripe erstattet.`
+  },
+  already_refunded: {
+    changed: false,
+    text: (detail) => `K\xFCndigung #${detail.id} war bereits erstattet (${detail.refund_execution.refunded_formatted}), nichts ge\xE4ndert.`
+  },
+  nothing_to_refund: {
+    changed: false,
+    text: (detail) => `K\xFCndigung #${detail.id}: nichts zu erstatten, kein Stripe-Aufruf.`
+  }
+};
+function buildRefundResultLines(response) {
+  const detail = response.data;
+  const execution = detail.refund_execution;
+  const result = REFUND_RESULT_TEXTS[response.meta.result];
+  const lines = [
+    result ? { kind: result.changed ? "action" : "note", text: result.text(detail) } : { kind: "note", text: `K\xFCndigung #${detail.id}: Ergebnis ${response.meta.result}` },
+    { kind: "note", text: `Erstattungsstatus: ${execution.status_label} (${execution.status}), erstattet ${execution.refunded_formatted}` }
+  ];
+  if (execution.stripe_refund_ids.length > 0) {
+    lines.push({ kind: "note", text: `Stripe-Refunds: ${execution.stripe_refund_ids.join(", ")}` });
+  }
+  if (execution.outstanding_cents !== null && execution.outstanding_cents > 0) {
+    lines.push({ kind: "warning", text: `Noch offen: ${formatEuroCents(execution.outstanding_cents)}` });
+  }
+  lines.push(...warningLines(detail.warnings));
+  return lines;
+}
+var RESULT_TEXTS = {
+  confirmed: { changed: true, text: (id) => `K\xFCndigung #${id} best\xE4tigt.` },
+  already_confirmed: { changed: false, text: (id) => `K\xFCndigung #${id} war bereits best\xE4tigt, nichts ge\xE4ndert.` },
+  rejected: { changed: true, text: (id) => `K\xFCndigung #${id} abgelehnt.` },
+  already_rejected: { changed: false, text: (id) => `K\xFCndigung #${id} war bereits abgelehnt, nichts ge\xE4ndert.` }
+};
+var RESULT_ALERTS = {
+  [WARNING.subscriptionCancelAtMissing]: (detail) => {
+    const target = detail.effective_date.stored ? ` zum ${formatGermanDate(detail.effective_date.stored)}` : "";
+    return `ACHTUNG: Stripe-K\xFCndigung vermutlich fehlgeschlagen. Das Abo ${detail.subscription?.stripe_id ?? ""} hat kein Enddatum. In Stripe pr\xFCfen und das Abo manuell${target} k\xFCndigen.`;
+  },
+  [WARNING.subscriptionCancellationFailed]: () => "ACHTUNG: Das Stripe-Abo konnte nicht gek\xFCndigt werden, der Kunde zahlt sonst weiter. In Stripe k\xFCndigen.",
+  [WARNING.subscriptionNotFound]: () => "ACHTUNG: Stripe kennt das Abo am Pass nicht, es wurde nichts gek\xFCndigt. In Stripe pr\xFCfen."
+};
+function buildActionResultLines(response) {
+  const detail = response.data;
+  const result = RESULT_TEXTS[response.meta.result];
+  const lines = [
+    result ? { kind: result.changed ? "action" : "note", text: result.text(detail.id) } : { kind: "note", text: `K\xFCndigung #${detail.id}: Ergebnis ${response.meta.result}` },
+    { kind: "note", text: `Status jetzt: ${detail.status_label} (${detail.status})` }
+  ];
+  if (detail.status === "confirmed") {
+    lines.push({ kind: "note", text: `Wirksam zum: ${formatGermanDate(detail.effective_date.stored)}` });
+    if (detail.withdrawal_recognized_at) {
+      const due = detail.withdrawal_refund_due_at ? `, volle Erstattung f\xE4llig bis ${formatGermanDate(detail.withdrawal_refund_due_at)}` : "";
+      lines.push({ kind: "note", text: `Als Widerruf behandelt am ${formatGermanDateTime(detail.withdrawal_recognized_at)}${due}` });
+    }
+    const importantReason = importantReasonText(detail);
+    if (importantReason) lines.push({ kind: "note", text: `Wichtiger Grund: ${importantReason}` });
+    if (detail.pass) lines.push({ kind: "note", text: `Zugang g\xFCltig bis: ${formatGermanDateTime(detail.pass.valid_until)}` });
+  }
+  if (detail.subscription) {
+    const endsAt = detail.subscription.ends_at ? formatGermanDate(detail.subscription.ends_at) : "kein Enddatum";
+    lines.push({
+      kind: "note",
+      text: `Stripe-Abo ${detail.subscription.stripe_id}: ${detail.subscription.stripe_status}, Ende ${endsAt}`
+    });
+  }
+  if (detail.subscription_cancellation?.status) {
+    const error = detail.subscription_cancellation.error ? ` (${detail.subscription_cancellation.error})` : "";
+    lines.push({ kind: "note", text: `Abo-K\xFCndigung: ${subscriptionCancellationLabel(detail.subscription_cancellation.status)}${error}` });
+  }
+  const bundleIds = detail.status === "confirmed" ? detail.subscription_cancellation?.bundle_user_pass_ids ?? [] : [];
+  if (bundleIds.length > 0) {
+    lines.push({ kind: "note", text: `B\xFCndel (ein Vertrag): Zugang der P\xE4sse ${bundleIds.map((id) => `#${id}`).join(", ")} endet mit.` });
+  }
+  if (detail.status === "rejected" && detail.review.rejection_ground) {
+    lines.push({ kind: "note", text: `Unzul\xE4ssig, weil: ${REJECTION_GROUND_LABELS[detail.review.rejection_ground] ?? detail.review.rejection_ground}` });
+  }
+  const alertCodes = Object.keys(RESULT_ALERTS);
+  for (const warning of detail.warnings.filter((item) => alertCodes.includes(item.code))) {
+    lines.push({ kind: "blocked", text: `${RESULT_ALERTS[warning.code](detail)} [${warning.code}] ${warning.message}` });
+  }
+  lines.push(...warningLines(detail.warnings, alertCodes), ...refundReminder(detail));
+  return lines;
+}
+var ERROR_CODE_HINTS = {
+  conflict: "Die Anfrage ist schon anders bearbeitet. Status mit show <id> pr\xFCfen.",
+  unprocessable: "Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht au\xDFerordentlicher K\xFCndigung, --als-widerruf au\xDFerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer K\xFCndigung oder einem fristgerechten Widerruf, oder keine Erstattung berechenbar.",
+  bundle_subscription_ambiguous: "Das Stripe-Abo bezahlt auch P\xE4sse aus einem anderen Kauf. Erst in Stripe kl\xE4ren, welcher Vertrag endet, dann erneut best\xE4tigen.",
+  company_multi_seat_subscription: COMPANY_MULTI_SEAT_TEXT,
+  paid_amount_unknown: `${LEDGER_MISSING_TEXT}: auf dem Server php artisan pass:backfill-payments, dann erneut.`,
+  not_confirmed: "Erst best\xE4tigen (confirm <id>), dann erstatten.",
+  refund_in_progress: "Es l\xE4uft bereits eine Erstattung. Nach 10 Minuten erneut versuchen und vorher mit show <id> den Stand pr\xFCfen.",
+  user_pass_missing: "Der Pass ist gel\xF6scht: Best\xE4tigen und Erstatten lassen sich nicht berechnen. Pass wiederherstellen oder die Erkl\xE4rung als unzul\xE4ssig ablehnen (reject --unzulaessig=falscher-vertrag), Geld manuell in Stripe kl\xE4ren.",
+  refund_failed: "Stripe hat die Erstattung abgelehnt. Bereits erstattete Anteile sind gebucht; Ursache in Stripe pr\xFCfen, dann refund <id> --force erneut (zahlt nicht doppelt)."
+};
+
+// src/admin/cancellation-format.ts
+function wrap(open, enabled) {
+  return enabled ? (text) => `\x1B[${open}m${text}\x1B[0m` : (text) => text;
+}
+function createPalette(enabled) {
+  return {
+    bold: wrap("1", enabled),
+    dim: wrap("2", enabled),
+    red: wrap("31", enabled),
+    green: wrap("32", enabled),
+    yellow: wrap("33", enabled),
+    cyan: wrap("36", enabled)
+  };
+}
+function colorsEnabledFor(stream) {
+  if (process.env.NO_COLOR) return false;
+  if (process.env.FORCE_COLOR) return true;
+  return Boolean(stream.isTTY);
+}
+var ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+function visibleLength(text) {
+  return text.replace(ANSI_PATTERN, "").length;
+}
+function pad(text, width, align) {
+  const fill = " ".repeat(Math.max(0, width - visibleLength(text)));
+  return align === "right" ? fill + text : text + fill;
+}
+function renderTable(rows, columns, c) {
+  const widths = columns.map(
+    (column) => Math.max(visibleLength(column.header), ...rows.map((row) => visibleLength(row[column.key] ?? "")))
+  );
+  const line = (cells) => cells.join("  ").trimEnd();
+  const header = line(columns.map((column, i) => c.bold(pad(column.header, widths[i], column.align ?? "left"))));
+  const separator = c.dim(line(widths.map((width) => "\u2500".repeat(width))));
+  const body = rows.map((row) => line(columns.map((column, i) => pad(row[column.key] ?? "", widths[i], column.align ?? "left"))));
+  return [header, separator, ...body].join("\n");
+}
+function keyValues(pairs, c) {
+  const width = Math.max(...pairs.map(([label]) => label.length));
+  return pairs.map(([label, value]) => `  ${c.dim(label.padEnd(width))}  ${value}`).join("\n");
+}
+function section(title, body, c) {
+  return `${c.bold(title)}
+${body}`;
+}
+function orDash(value) {
+  return value === null || value === void 0 || value === "" ? DASH : String(value);
+}
+function statusText(status, label, c) {
+  if (status === "confirmed") return c.green(label);
+  if (status === "pending") return c.yellow(label);
+  if (status === "rejected") return c.red(label);
+  return c.dim(label);
+}
+function isCritical(code) {
+  return CRITICAL_WARNINGS.includes(code);
+}
+function warningCodeText(code, c) {
+  const label = shortWarningLabel(code);
+  return isCritical(code) ? c.red(c.bold(label)) : c.yellow(label);
+}
+function listTypeText(item, c) {
+  const label = typeText(item);
+  if (!isWithdrawal(item)) return label;
+  if (item.refund_status === "refunded" || item.status !== "pending" && item.status !== "confirmed") return label;
+  const due = withdrawalDueDateFromReceipt(item.received_at);
+  return due ? `${label}, ${c.bold(`Erstattung bis ${formatGermanDate(due)}`)}` : label;
+}
+function refundStatusText(status, c) {
+  if (!status) return c.dim(DASH);
+  const label = SHORT_REFUND_STATUS_LABELS[status] ?? status;
+  if (status === "failed") return c.red(c.bold(label));
+  if (status === "refunded") return c.green(label);
+  if (status === "pending") return c.yellow(label);
+  if (status === "partially_refunded") return c.yellow(c.bold(label));
+  return c.dim(label);
+}
+function renderCancellationList(response, c) {
+  const { data, meta } = response;
+  if (data.length === 0) {
+    return `Keine K\xFCndigungsanfragen (Status: ${meta.status}).`;
+  }
+  const columns = [
+    { key: "id", header: "ID", align: "right" },
+    { key: "received", header: "Eingang" },
+    { key: "age", header: "Alter", align: "right" },
+    { key: "name", header: "Name" },
+    { key: "pass", header: "Pass" },
+    { key: "type", header: "Art" },
+    { key: "effective", header: "Wirksam zum" },
+    { key: "payment", header: "Zahlungsart" },
+    { key: "refund", header: "Erstattung" },
+    { key: "warnings", header: "Warnungen" }
+  ];
+  if (meta.status === "all") {
+    columns.splice(1, 0, { key: "status", header: "Status" });
+  }
+  const rows = data.map((item) => ({
+    id: `#${item.id}`,
+    status: statusText(item.status, item.status_label, c),
+    received: formatGermanDate(item.received_at),
+    age: `${item.age_days} T`,
+    name: item.participant_name,
+    pass: orDash(item.pass_name),
+    type: listTypeText(item, c),
+    effective: formatGermanDate(item.effective_date),
+    payment: paymentModeLabel(item.payment_mode),
+    refund: refundStatusText(item.refund_status, c),
+    warnings: item.warnings.length > 0 ? item.warnings.map((warning) => warningCodeText(warning.code, c)).join(", ") : c.dim(DASH)
+  }));
+  const next = meta.current_page < meta.last_page ? ` \xB7 weiter mit --page ${meta.current_page + 1}` : "";
+  const footer = c.dim(
+    `Seite ${meta.current_page} von ${meta.last_page} \xB7 ${meta.total} Anfrage${meta.total === 1 ? "" : "n"} gesamt \xB7 Status: ${meta.status}${next}`
+  );
+  const ledgerMissing = data.filter((item) => hasWarning(item.warnings, WARNING.paidAmountUnknown)).map((item) => `#${item.id}`);
+  const ledgerNote = ledgerMissing.length > 0 ? `
+${c.red(c.bold(`${LEDGER_MISSING_TEXT}: ${ledgerMissing.join(", ")}`))}` : "";
+  return `${renderTable(rows, columns, c)}
+
+${footer}${ledgerNote}`;
+}
+function warningsSection(warnings, c) {
+  if (warnings.length === 0) return section("Warnungen", c.dim("  keine"), c);
+  const lines = warnings.map((warning) => {
+    const text = `  [${warning.code}] ${warning.message}`;
+    return isCritical(warning.code) ? c.red(c.bold(text)) : c.yellow(text);
+  });
+  return section("Warnungen", lines.join("\n"), c);
+}
+function effectiveDateSection(detail, c) {
+  const { stored, recalculated, recalculation_explanation: explanation, recalculation_error: error } = detail.effective_date;
+  const differs = stored && recalculated && stored !== recalculated;
+  const pairs = [
+    ["Gespeichert", formatGermanDate(stored)],
+    ["Neu berechnet", differs ? c.yellow(`${formatGermanDate(recalculated)} (weicht ab)`) : formatGermanDate(recalculated)]
+  ];
+  const flags = [
+    detail.effective_date.recalculated_reinterpreted_as_ordinary ? "umgedeutet in ordentliche K\xFCndigung (\xA7 140 BGB)" : "",
+    detail.effective_date.recalculated_ends_regularly ? "endet regul\xE4r zum Vertragsende" : ""
+  ].filter(Boolean);
+  if (flags.length > 0) pairs.push(["Hinweis", flags.join(", ")]);
+  if (explanation) pairs.push(["Berechnung", explanation]);
+  if (error) pairs.push(["Fehler", c.red(error)]);
+  return section("Wirksamkeitsdatum", keyValues(pairs, c), c);
+}
+function refundSection(detail, c) {
+  const { refund: refund2 } = detail;
+  if (!refund2) {
+    const body = detail.refund_error ? c.red(`  Nicht berechnet: ${detail.refund_error}`) : c.dim("  keine");
+    return section("Erstattung (Berechnung)", body, c);
+  }
+  return section(
+    "Erstattung (Berechnung)",
+    keyValues(
+      [
+        [
+          "Vertragspreis",
+          `${refund2.total_price_formatted} (${refund2.total_months} Monate, ${refund2.total_days} Tage)${refund2.is_contract_price_estimated ? c.yellow(" gesch\xE4tzt: Katalogpreis, Vertragspreis fehlt") : ""}`
+        ],
+        ["Genutzt", `${refund2.used_days} Tage`],
+        ["Geschuldet", refund2.owed_amount_formatted],
+        [
+          "Bezahlt",
+          refund2.is_paid_amount_estimated ? c.red(c.bold("unbekannt, Zahlungsbuch leer (Backfill n\xF6tig)")) : `${refund2.paid_amount_formatted} (Zahlungsbuch)`
+        ],
+        ["Erstattung", `${c.bold(refund2.refund_amount_formatted)}${refund2.is_withdrawal ? " (Widerruf: voller Betrag)" : ""}`],
+        ["Berechnung", orDash(refund2.calculation_explanation)]
+      ],
+      c
+    ),
+    c
+  );
+}
+function refundExecutionSection(detail, c) {
+  const execution = detail.refund_execution;
+  if (!execution) return section("Erstattung ausgef\xFChrt", c.dim("  keine Angabe"), c);
+  const statusLabel = `${execution.status_label} (${execution.status})`;
+  const statusText2 = execution.status === "failed" ? c.red(c.bold(statusLabel)) : execution.status === "partially_refunded" ? c.yellow(c.bold(statusLabel)) : statusLabel;
+  const pairs = [
+    ["Status", statusText2],
+    ["Erstattet", execution.refunded_formatted],
+    ["Offen", execution.outstanding_cents === null ? `${DASH} (nicht berechenbar)` : formatEuroCents(execution.outstanding_cents)],
+    ["Stripe-Refunds", execution.stripe_refund_ids.length > 0 ? execution.stripe_refund_ids.join(", ") : DASH],
+    ["Am", formatGermanDateTime(execution.refunded_at)]
+  ];
+  if (execution.error) pairs.push(["Fehler", c.red(execution.error)]);
+  const outstanding = execution.outstanding_cents ?? 0;
+  if (detail.status === "confirmed" && outstanding > 0) {
+    pairs.push(["N\xE4chster Schritt", `lernplattform kuendigungen refund ${detail.id} (Vorschau, echtes Geld erst mit --force)`]);
+  }
+  return section("Erstattung ausgef\xFChrt", keyValues(pairs, c), c);
+}
+function subscriptionCancellationSection(detail, c) {
+  const cancellation = detail.subscription_cancellation;
+  const bundleIds = cancellation?.bundle_user_pass_ids ?? [];
+  if (!cancellation || !cancellation.status && !cancellation.error && bundleIds.length === 0 && !cancellation.bundle_ambiguous) return null;
+  const pairs = [];
+  if (cancellation.status || cancellation.error) {
+    const label = subscriptionCancellationLabel(cancellation.status);
+    pairs.push(["Ergebnis", cancellation.status === "failed" || cancellation.status === "not_found" ? c.red(c.bold(label)) : label]);
+  }
+  if (cancellation.error) pairs.push(["Fehler", c.red(cancellation.error)]);
+  if (bundleIds.length > 0) {
+    const verb = detail.status === "pending" ? "enden mit" : "endeten mit";
+    pairs.push(["B\xFCndel", `ein Vertrag, P\xE4sse ${bundleIds.map((id) => `#${id}`).join(", ")} ${verb}`]);
+  }
+  if (cancellation.bundle_ambiguous) {
+    pairs.push(["B\xFCndel", c.red(c.bold("nicht eindeutig: Abo bezahlt P\xE4sse eines anderen Kaufs, Best\xE4tigen gesperrt"))]);
+  }
+  return section("Abo-K\xFCndigung (Best\xE4tigung)", keyValues(pairs, c), c);
+}
+function blockerBanner(detail, c) {
+  const banners = [];
+  if (hasWarning(detail.warnings, WARNING.paidAmountUnknown)) {
+    banners.push(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`);
+  }
+  if (hasWarning(detail.warnings, WARNING.companyMultiSeatSubscription)) {
+    banners.push(`! Best\xE4tigen gesperrt: ${COMPANY_MULTI_SEAT_TEXT}`);
+  }
+  if (hasWarning(detail.warnings, WARNING.bundleSubscriptionAmbiguous)) {
+    banners.push("! Best\xE4tigen gesperrt: Das Stripe-Abo bezahlt auch P\xE4sse aus einem anderen Kauf. Erst in Stripe kl\xE4ren.");
+  }
+  return banners.length > 0 ? banners.map((banner) => c.red(c.bold(banner))).join("\n") : null;
+}
+function renderCancellationDetail(detail, c) {
+  const { participant, pass, subscription, review } = detail;
+  const requestPairs = [
+    ["Status", statusText(detail.status, `${detail.status_label} (${detail.status})`, c)],
+    ["Art", typeText(detail)]
+  ];
+  if (detail.withdrawal_recognized_at) {
+    requestPairs.push(["Als Widerruf", `behandelt am ${formatGermanDateTime(detail.withdrawal_recognized_at)} (\xA7 355 Abs. 1 S. 3 BGB)`]);
+  }
+  const importantReason = importantReasonText(detail);
+  if (importantReason) requestPairs.push(["Wichtiger Grund", importantReason]);
+  if (detail.withdrawal_refund_due_at) {
+    const done = detail.refund_execution?.status === "refunded";
+    const due = `Erstattung sp\xE4testens bis ${formatGermanDate(detail.withdrawal_refund_due_at)} (\xA7 357 BGB)`;
+    requestPairs.push(["Widerruf", done ? `${due}, erledigt` : c.bold(due)]);
+  }
+  requestPairs.push(
+    ["Eingang", `${formatGermanDateTime(detail.received_at)} (vor ${detail.age_days} Tagen)`],
+    ["Grund", orDash(detail.reason)],
+    ["Zahlungsart", paymentModeLabel(detail.payment_mode)]
+  );
+  const request = section(`K\xFCndigung #${detail.id}`, keyValues(requestPairs, c), c);
+  const participantSection = section(
+    "Teilnehmer",
+    keyValues(
+      [
+        ["Name", participant.name],
+        ["E-Mail", participant.email],
+        ["Adresse", orDash(participant.address_formatted)],
+        ["User-ID", participant.user_id]
+      ],
+      c
+    ),
+    c
+  );
+  const passSection = pass ? section(
+    "Pass",
+    keyValues(
+      [
+        ["Name", `${pass.name} (UserPass #${pass.user_pass_id})`],
+        ["Laufzeit", pass.duration_months ? `${pass.duration_months} Monate` : DASH],
+        ["Gekauft", formatGermanDate(pass.purchased_at)],
+        ["Aktiviert", formatGermanDate(pass.activated_at)],
+        ["G\xFCltig bis", formatGermanDate(pass.valid_until)],
+        ["Status", orDash(pass.user_pass_status)],
+        ["B2B", pass.is_b2b ? `ja (${orDash(pass.company_name)})` : "nein"]
+      ],
+      c
+    ),
+    c
+  ) : section("Pass", c.red("  gel\xF6scht oder nicht mehr verkn\xFCpft (user_pass_missing)"), c);
+  const subscriptionSection = subscription ? section(
+    "Abo (Stripe)",
+    keyValues(
+      [
+        ["Stripe-ID", subscription.stripe_id],
+        ["Status", subscription.stripe_status],
+        ["Enddatum", formatGermanDate(subscription.ends_at)],
+        ["Gek\xFCndigt", subscription.is_canceled ? "ja" : "nein"]
+      ],
+      c
+    ),
+    c
+  ) : section("Abo (Stripe)", c.dim("  keins"), c);
+  const reviewer = review.reviewed_by ? `${review.reviewed_by.name ?? review.reviewed_by.email} <${review.reviewed_by.email}>` : DASH;
+  const reviewSection = section(
+    "Review",
+    review.reviewed_at ? keyValues(
+      [
+        ["Am", formatGermanDateTime(review.reviewed_at)],
+        ["Von", reviewer],
+        ["Notiz", orDash(review.admin_notes)],
+        ["Unzul\xE4ssig, weil", review.rejection_ground ? REJECTION_GROUND_LABELS[review.rejection_ground] ?? review.rejection_ground : DASH],
+        ["Ablehnungsgrund", orDash(review.rejection_reason)]
+      ],
+      c
+    ) : c.dim("  noch nicht bearbeitet"),
+    c
+  );
+  return [
+    blockerBanner(detail, c),
+    request,
+    participantSection,
+    passSection,
+    subscriptionSection,
+    subscriptionCancellationSection(detail, c),
+    effectiveDateSection(detail, c),
+    refundSection(detail, c),
+    refundExecutionSection(detail, c),
+    reviewSection,
+    warningsSection(detail.warnings, c)
+  ].filter((part) => part !== null).join("\n\n");
+}
+function renderPreviewLines(lines, c) {
+  const prefix = {
+    action: (text) => `  ${c.cyan("\u2192")} ${text}`,
+    note: (text) => `  ${c.dim("\xB7")} ${text}`,
+    warning: (text) => c.yellow(`  \u26A0 ${text}`),
+    blocked: (text) => c.red(c.bold(`  ! ${text}`)),
+    hint: (text) => c.dim(`
+  ${text}`)
+  };
+  return lines.map((line) => prefix[line.kind](line.text)).join("\n");
+}
+
+// src/commands/kuendigungen.ts
+var EXIT_OK = 0;
+var EXIT_USAGE = 1;
+var EXIT_API = 2;
+var MAX_PER_PAGE = 100;
+var MAX_TEXT_LENGTH = 2e3;
+var COMMON_FLAGS = ["env", "json", "help"];
+var ALLOWED_FLAGS = {
+  list: [...COMMON_FLAGS, "status", "page", "per-page"],
+  show: [...COMMON_FLAGS],
+  confirm: [...COMMON_FLAGS, "notiz", "notiz-stdin", "notiz-base64", "wichtiger-grund-anerkannt", "als-widerruf", "force"],
+  reject: [...COMMON_FLAGS, "unzulaessig", "grund", "grund-stdin", "grund-base64", "force"],
+  refund: [...COMMON_FLAGS, "force"]
+};
+var WRITE_OPERATIONS = ["confirm", "reject", "refund"];
+var IMPORTANT_REASON_FLAG = "wichtiger-grund-anerkannt";
+var TREAT_AS_WITHDRAWAL_FLAG = "als-widerruf";
+function assertKnownFlags(operation, args) {
+  const allowed = ALLOWED_FLAGS[operation];
+  const unknown = Object.keys(args.flags).filter((flag) => !allowed.includes(flag));
+  if (unknown.length > 0) {
+    throw new AdminUsageError(
+      `Unbekannte Option(en) f\xFCr ${operation}: ${unknown.map((flag) => `--${flag}`).join(", ")}. Erlaubt: ${allowed.filter((flag) => flag !== "help").map((flag) => `--${flag}`).join(", ")}`
+    );
+  }
+}
+function parseId(args) {
+  const raw = args.positional[0];
+  if (raw === void 0) {
+    throw new AdminUsageError("ID der K\xFCndigungsanfrage fehlt. IDs liefert: lernplattform kuendigungen list");
+  }
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    throw new AdminUsageError(`Ung\xFCltige ID: ${raw}. Erwartet wird eine positive Zahl, z. B. 12.`);
+  }
+  return Number(raw);
+}
+function parsePositiveInt(value, flag, max) {
+  if (value === void 0) return void 0;
+  const number = typeof value === "number" ? value : Number.NaN;
+  if (!Number.isInteger(number) || number < 1 || max !== void 0 && number > max) {
+    const range = max !== void 0 ? `1 bis ${max}` : "ab 1";
+    throw new AdminUsageError(`--${flag} erwartet eine ganze Zahl ${range}, bekommen: ${String(value)}`);
+  }
+  return number;
+}
+function parseStatus(value) {
+  if (value === void 0) return "pending";
+  const status = String(value);
+  if (!CANCELLATION_STATUS_FILTERS.includes(status)) {
+    throw new AdminUsageError(`Ung\xFCltiger Status: ${status}. Erlaubt: ${CANCELLATION_STATUS_FILTERS.join(", ")}`);
+  }
+  return status;
+}
+function readText(args, name, required) {
+  if (args.flags[name] === true) {
+    throw new AdminUsageError(`--${name} braucht einen Text, z. B. --${name}="\u2026"`);
+  }
+  const text = getTextData(args, name)?.trim();
+  if (!text) {
+    if (required) {
+      throw new AdminUsageError(`--${name}="\u2026" ist Pflicht und darf nicht leer sein (alternativ --${name}-stdin).`);
+    }
+    return void 0;
+  }
+  if (text.length > MAX_TEXT_LENGTH) {
+    throw new AdminUsageError(`--${name} ist zu lang (${text.length} Zeichen, maximal ${MAX_TEXT_LENGTH}).`);
+  }
+  return text;
+}
+function switchFlag(args, name) {
+  const value = args.flags[name];
+  if (value === void 0) return false;
+  if (value === true) return true;
+  throw new AdminUsageError(
+    `--${name} ist ein Schalter ohne Wert, bekommen: ${String(value)}. Die ID geh\xF6rt vor die Flags, z. B. confirm 12 --${name}.`
+  );
+}
+function isForce(args) {
+  return switchFlag(args, "force");
+}
+function isJson(args) {
+  return args.flags.json === true;
+}
+async function list(client, args, io) {
+  const response = await listCancellationRequests(client, {
+    status: parseStatus(args.flags.status),
+    page: parsePositiveInt(args.flags.page, "page"),
+    perPage: parsePositiveInt(args.flags["per-page"], "per-page", MAX_PER_PAGE)
+  });
+  io.out(isJson(args) ? JSON.stringify(response, null, 2) : renderCancellationList(response, io.palette));
+}
+async function show(client, args, io) {
+  const response = await getCancellationRequest(client, parseId(args));
+  io.out(isJson(args) ? JSON.stringify(response, null, 2) : renderCancellationDetail(response.data, io.palette));
+}
+async function confirm(client, args, io, target) {
+  const id = parseId(args);
+  const adminNotes = readText(args, "notiz", false);
+  const importantReasonAccepted = switchFlag(args, IMPORTANT_REASON_FLAG);
+  const treatAsWithdrawal = switchFlag(args, TREAT_AS_WITHDRAWAL_FLAG);
+  if (importantReasonAccepted && treatAsWithdrawal) {
+    throw new AdminUsageError(`--${IMPORTANT_REASON_FLAG} und --${TREAT_AS_WITHDRAWAL_FLAG} schlie\xDFen sich aus (Server: 422).`);
+  }
+  if (!isForce(args)) {
+    const { data: detail } = await getCancellationRequest(client, id);
+    const preview = buildConfirmationPreview(detail, { adminNotes, importantReasonAccepted, treatAsWithdrawal });
+    writePreview(io, args, target, preview.changesState, preview.lines, detail);
+    return;
+  }
+  const response = await confirmCancellationRequest(client, id, { adminNotes, importantReasonAccepted, treatAsWithdrawal });
+  writeResult(io, args, response, buildActionResultLines(response));
+}
+function parseGround(args) {
+  const value = args.flags.unzulaessig;
+  const options = Object.keys(REJECTION_GROUNDS).join(" | ");
+  if (value === void 0 || value === true) {
+    throw new AdminUsageError(
+      `--unzulaessig=<art> ist Pflicht: ${options}. Eine wirksame K\xFCndigung wird nicht abgelehnt, sondern best\xE4tigt (confirm).`
+    );
+  }
+  const ground = parseRejectionGround(String(value));
+  if (!ground) {
+    throw new AdminUsageError(`Unbekannte Art f\xFCr --unzulaessig: ${String(value)}. Erlaubt: ${options}.`);
+  }
+  return ground;
+}
+async function reject(client, args, io, target) {
+  const id = parseId(args);
+  const ground = parseGround(args);
+  const reason = readText(args, "grund", true);
+  if (!isForce(args)) {
+    const { data: detail } = await getCancellationRequest(client, id);
+    const preview = buildRejectionPreview(detail, reason, ground);
+    writePreview(io, args, target, preview.changesState, preview.lines, detail);
+    return;
+  }
+  const response = await rejectCancellationRequest(client, id, reason, ground);
+  writeResult(io, args, response, buildActionResultLines(response));
+}
+async function refund(client, args, io, target) {
+  const id = parseId(args);
+  if (!isForce(args)) {
+    const { data: detail } = await getCancellationRequest(client, id);
+    const preview = buildRefundPreview(detail);
+    writePreview(io, args, target, preview.changesState, preview.lines, detail);
+    return;
+  }
+  io.err(REAL_MONEY_TEXT);
+  const response = await refundCancellationRequest(client, id);
+  writeResult(io, args, response, buildRefundResultLines(response));
+}
+function writePreview(io, args, target, changesState, lines, detail) {
+  if (isJson(args)) {
+    io.out(JSON.stringify({ mode: "preview", changes_state: changesState, lines, data: detail }, null, 2));
+    return;
+  }
+  io.out(`${io.palette.bold(`Vorschau (nichts ausgef\xFChrt) \xB7 Ziel: ${describeTarget(target)}`)}
+
+${renderPreviewLines(lines, io.palette)}`);
+}
+function writeResult(io, args, response, lines) {
+  if (isJson(args)) {
+    io.out(JSON.stringify(response, null, 2));
+    return;
+  }
+  io.out(renderPreviewLines(lines, io.palette));
+}
+function errorPayload(error) {
+  const payload = adminApiErrorPayload(error);
+  const code = typeof payload.code === "string" ? payload.code : void 0;
+  if (code && ERROR_CODE_HINTS[code]) payload.hint = ERROR_CODE_HINTS[code];
+  const data = error.body?.data;
+  const execution = data && typeof data === "object" ? data.refund_execution : void 0;
+  if (code === "refund_failed" && execution) {
+    payload.refund_execution = {
+      status: execution.status,
+      refunded_cents: execution.refunded_cents,
+      outstanding_cents: execution.outstanding_cents,
+      stripe_refund_ids: execution.stripe_refund_ids,
+      error: execution.error
+    };
+  }
+  return payload;
+}
+var OPERATIONS = {
+  list,
+  show,
+  confirm,
+  reject,
+  refund
+};
+async function executeKuendigungen(argv, io) {
+  const operation = argv[0];
+  const args = parseCliArgs(argv.slice(1));
+  if (!operation || operation === "help" || operation === "--help" || operation === "-h" || args.flags.help) {
+    io.out(HELP_TEXT);
+    return EXIT_OK;
+  }
+  const handler = OPERATIONS[operation];
+  if (!handler) {
+    io.err(JSON.stringify({ error: `Unbekannte Aktion: ${operation}`, available: Object.keys(OPERATIONS) }, null, 2));
+    return EXIT_USAGE;
+  }
+  try {
+    assertKnownFlags(operation, args);
+    if (WRITE_OPERATIONS.includes(operation)) {
+      requireExplicitEnvironment({ environmentExplicit: isEnvironmentExplicit(args.flags.env, io.env) }, operation);
+    }
+    const target = resolveAdminApiTarget(args.flags.env, io.env);
+    io.err(`Ziel: ${describeTarget(target)}`);
+    const client = new AdminApiClient({
+      baseUrl: target.baseUrl,
+      token: target.token,
+      basicAuth: target.basicAuth,
+      basicAuthVariable: target.basicAuthVariable
+    });
+    await handler(client, args, io, target);
+    return EXIT_OK;
+  } catch (error) {
+    if (error instanceof AdminApiError) {
+      io.err(JSON.stringify(errorPayload(error), null, 2));
+      return EXIT_API;
+    }
+    io.err(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }, null, 2));
+    return EXIT_USAGE;
+  }
+}
+async function run13(argv) {
+  const exitCode = await executeKuendigungen(argv, {
+    out: (text) => process.stdout.write(`${text}
+`),
+    err: (text) => process.stderr.write(`${text}
+`),
+    env: process.env,
+    palette: createPalette(colorsEnabledFor(process.stdout))
+  });
+  process.exitCode = exitCode;
+}
+var HELP_TEXT = `lernplattform kuendigungen - K\xFCndigungsanfragen \xFCber die Admin-API (/api/admin/v1)
+
+USAGE
+  lernplattform kuendigungen <aktion> [id] [--flag=wert]
+
+ABLAUF: pr\xFCfen \u2192 confirm \u2192 refund
+  1) list / show            lesen, Warnungen und Berechnung pr\xFCfen (frei)
+  2) confirm <id>           K\xFCndigung best\xE4tigen: Wirksamkeit, Zugangsende, Stripe-Abo, Mail.
+                            L\xF6st KEINE Erstattung aus.
+  3) refund <id>            Erstattung \xFCber Stripe auszahlen. ECHTES GELD.
+  confirm, reject und refund sind VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau.
+  Sie brauchen immer ein ausdr\xFCckliches Ziel (--env=production|staging oder $LERNPLATTFORM_ENV),
+  sonst brechen sie ab, auch die Vorschau.
+
+AKTIONEN
+  list                 K\xFCndigungsanfragen auflisten (lesend). Default: offene (pending), \xE4lteste zuerst
+  show <id>            Eine Anfrage im Detail: Teilnehmer, Pass, Stripe-Abo, Wirksamkeitsdatum
+                       (gespeichert und neu berechnet), Erstattung (Berechnung und ausgef\xFChrt),
+                       Abo-K\xFCndigung, Review, Warnungen (lesend)
+  confirm <id>         Anfrage best\xE4tigen. VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau
+  reject <id>          Unzul\xE4ssige Erkl\xE4rung ablehnen (Duplikat, keine K\xFCndigung, falscher Vertrag,
+                       Widerruf ausgeschlossen). Eine wirksame K\xFCndigung wird best\xE4tigt, nicht
+                       abgelehnt. VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau
+  refund <id>          Berechnete Erstattung \xFCber Stripe auszahlen. VER\xC4NDERND, ECHTES GELD, nur nach
+                       ausdr\xFCcklicher Ansage. Ohne --force nur Vorschau
+
+FLAGS
+  --env=production|staging   Zielumgebung. Lesend (list, show): Default $LERNPLATTFORM_ENV, sonst
+                             production, stderr zeigt "Default ohne --env". Ver\xE4ndernd (confirm, reject,
+                             refund): Pflicht, ohne --env und ohne $LERNPLATTFORM_ENV Abbruch (Exit 1)
+  --json                     Rohes JSON der API auf stdout statt Tabelle/Text
+  list:
+    --status=S               pending (Default) | confirmed | rejected | withdrawn | all
+    --page=N                 Seite (ab 1)
+    --per-page=N             Eintr\xE4ge pro Seite (Server-Default 25, max ${MAX_PER_PAGE})
+  confirm:
+    --wichtiger-grund-anerkannt  Nur au\xDFerordentliche K\xFCndigung: wichtiger Grund anerkannt (\xA7 314 BGB),
+                             sofortige Wirkung. Ohne das Flag gilt sie als ordentliche K\xFCndigung zum
+                             n\xE4chstm\xF6glichen Termin (Umdeutung, \xA7 140 BGB). Sonst 422.
+    --als-widerruf           Ordentliche/au\xDFerordentliche Anfrage als Widerruf behandeln: volle Erstattung,
+                             Zugang und Abo enden sofort. Nur bei Eingang innerhalb von 14 Tagen nach dem
+                             Kauf (Warnung widerruf-moeglich), nur f\xFCr Verbraucher (nie Firmenpass),
+                             nicht zusammen mit --wichtiger-grund-anerkannt.
+    --notiz="\u2026"              Interne Admin-Notiz (admin_notes, max ${MAX_TEXT_LENGTH} Zeichen)
+    --force                  Wirklich ausf\xFChren
+  reject:
+    --unzulaessig=ART        Pflicht. Warum die Erkl\xE4rung unzul\xE4ssig ist:
+                               duplikat                 schon gek\xFCndigt oder in Pr\xFCfung
+                               keine-erklaerung         Frage, Versehen, zur\xFCckgenommen
+                               falscher-vertrag         falscher Pass, kein Vertragspartner
+                               widerruf-ausgeschlossen  nur Widerruf: Frist abgelaufen oder Firmenpass
+                             (die API-Werte duplicate, not_a_declaration, wrong_contract,
+                             withdrawal_not_available gehen auch)
+    --grund="\u2026"              Pflicht. Begr\xFCndung, geht per Mail an den Teilnehmer (max ${MAX_TEXT_LENGTH} Zeichen)
+    --force                  Wirklich ausf\xFChren
+  refund:
+    --force                  Wirklich auszahlen (Stripe-Refund). Kein Betrag w\xE4hlbar: immer die berechnete
+                             Erstattung minus bereits erstattet
+  Lange Texte: --notiz-stdin / --grund-stdin (Heredoc) oder --notiz-base64 / --grund-base64
+  Schalter (--force, --wichtiger-grund-anerkannt, --als-widerruf) nehmen keinen Wert; die ID steht vorn.
+
+WAS DIE BEFEHLE MIT --force AUSL\xD6SEN
+  confirm --force  \u2192 Status "confirmed", Wirksamkeitsdatum wird neu festgelegt (ab Zugang der Erkl\xE4rung),
+                     Zugang endet zum Wirksamkeitsdatum (sofort bei Widerruf/anerkanntem Grund),
+                     Stripe-Abo wird zum Wirksamkeitsdatum gek\xFCndigt (sofort, wenn es sofort wirkt oder
+                     das Datum erreicht ist), Best\xE4tigungsmail an den echten Teilnehmer. KEINE Erstattung.
+                     B\xFCndel-Abo (mehrere P\xE4sse, ein Kauf) = ein Vertrag: der Zugang ALLER P\xE4sse des B\xFCndels
+                     endet zum selben Zeitpunkt (subscription_cancellation.bundle_user_pass_ids).
+                     Firmen-Abo mit mehreren Lizenzen: kein B\xFCndel, Lizenzen werden einzeln gek\xFCndigt.
+                     Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous,
+                     company_multi_seat_subscription, user_pass_missing.
+  reject --force   \u2192 Status "rejected" mit rejection_ground, Ablehnungsmail mit --grund an den Teilnehmer.
+  refund --force   \u2192 Stripe-Refund(s) \xFCber die Zahlungen des Vertrags, neueste zuerst, auf das beim Kauf
+                     genutzte Zahlungsmittel. Echtes Geld, nicht umkehrbar. Nur f\xFCr best\xE4tigte Anfragen
+                     mit bekanntem Zahlbetrag. Direkt in Stripe erstattete Betr\xE4ge sind schon abgezogen.
+                     Kommt nach der Erstattung noch eine Rate, steht die Anfrage auf partially_refunded
+                     (REST-OFFEN) und refund --force zahlt nur den Rest.
+  Ohne --force: nur Vorschau (ein GET), nichts wird ver\xE4ndert, Exit 0.
+  Idempotent: bereits best\xE4tigt/abgelehnt/erstattet \u2192 already_confirmed/already_rejected/already_refunded,
+  keine zweite Mail, keine zweite Auszahlung. Jeder POST schickt einen frischen Idempotency-Key (UUID).
+
+ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
+  confirm   200 confirmed | already_confirmed
+            409 conflict (anderer Status) | paid_amount_unknown (Zahlungsbuch fehlt, Backfill n\xF6tig)
+                | bundle_subscription_ambiguous (Abo bezahlt P\xE4sse eines anderen Kaufs)
+                | company_multi_seat_subscription (Firmen-Abo mit mehreren Lizenzen, AIDI-776)
+                | user_pass_missing (Pass gel\xF6scht)
+            422 unprocessable (Flag passt nicht zur Anfrage, z. B. Widerruf bei Firmenpass)
+  reject    200 rejected | already_rejected       409 conflict
+            422 unprocessable (--unzulaessig passt nicht, z. B. widerruf-ausgeschlossen bei K\xFCndigung)
+  refund    200 refunded | already_refunded | nothing_to_refund
+            409 not_confirmed | paid_amount_unknown | refund_in_progress | user_pass_missing
+            422 unprocessable (keine Erstattung berechenbar)
+            502 refund_failed (Stripe hat abgelehnt; stderr zeigt refund_execution, erneut mit --force
+                m\xF6glich, bereits erstattete Anteile werden nicht doppelt gezahlt)
+
+WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; VERSALIEN = kritisch)
+  ZAHLUNGSBUCH-FEHLT       paid_amount_unknown: Best\xE4tigen gesperrt, Zahlungsbuch fehlt (Backfill:
+                           php artisan pass:backfill-payments). Erstatten ebenso
+  ABO-BUENDEL-UNKLAR       bundle_subscription_ambiguous: Abo bezahlt P\xE4sse eines anderen Kaufs,
+                           Best\xE4tigen gesperrt, erst in Stripe kl\xE4ren
+  FIRMA-MEHRLIZENZ         company_multi_seat_subscription: Firmen-Abo mit mehreren Lizenzen, Best\xE4tigen
+                           gesperrt bis AIDI-776. In Stripe die Menge zum Wirksamkeitsdatum reduzieren
+                           und den Zugang nur dieser Lizenz beenden
+  erstattung-offen         refund_outstanding: best\xE4tigt, Erstattung noch offen (oder Rest nach neuer Rate).
+                           Bei Abos erst nach der letzten Rate vor dem Wirksamkeitsdatum erstatten
+  ERSTATTUNG-FEHLGESCHLAGEN refund_failed: letzter refund-Versuch von Stripe abgelehnt
+  ABO-KUENDIGUNG-FEHLGESCHLAGEN subscription_cancellation_failed: Stripe-Abo nicht gek\xFCndigt \u2192 in Stripe k\xFCndigen
+  ABO-NICHT-IN-STRIPE      subscription_not_found: Abo-ID am Pass, Stripe kennt das Abo nicht
+  STRIPE-KUENDIGUNG-FEHLT  subscription_cancel_at_missing: best\xE4tigt, aber Abo ohne Enddatum
+  widerruf-erstatten       withdrawal_refund_due: Widerruf, voller Betrag bis zum genannten Datum erstatten
+  widerruf-moeglich        withdrawal_possible: Eingang innerhalb 14 Tagen nach Kauf, --als-widerruf m\xF6glich
+  wichtiger-grund-offen    important_reason_decision_required: au\xDFerordentlich, Entscheidung beim confirm
+  vertragspreis-fehlt      contract_price_unknown: Geschuldetes mit Katalogpreis gerechnet (Gutschein fehlt)
+  abo-buendel              bundle_subscription: B\xFCndel = ein Vertrag, confirm beendet Abo und Zugang
+                           aller P\xE4sse des B\xFCndels zum selben Termin
+  pass-geloescht           user_pass_missing: Pass gel\xF6scht, Zugang/Abo/Erstattung nicht pr\xFCfbar
+  datum-vergangen          effective_date_in_past: gespeichertes Wirksamkeitsdatum liegt in der Vergangenheit
+  offen>14d                pending_longer_than_14_days: Anfrage wartet l\xE4nger als 14 Tage
+  abo-gekuendigt           subscription_already_canceled: Stripe-Abo hat schon ein Enddatum
+  zugang-laenger           access_continues_after_effective_date: Zugang l\xE4uft \xFCber das Datum hinaus
+  abo-ende-abweichend      subscription_end_differs_from_effective_date
+  Spalte "Erstattung" der Liste: \u2014 (keine) | l\xE4uft | erstattet | REST-OFFEN | FEHLGESCHLAGEN.
+  Widerruf: Spalte "Art" zeigt "Erstattung bis TT.MM.JJJJ" (14 Tage nach Eingang, \xA7 357 BGB).
+
+RECHTLICHER RAHMEN (Berechnung macht die Plattform, die CLI zeigt sie nur)
+  Ordentliche K\xFCndigung nach \xA7 5 FernUSG: im ersten Halbjahr fr\xFChestens zu dessen Ende mit 6 Wochen Frist,
+  danach mit 3 Monaten Frist ab Zugang. Au\xDFerordentlich ohne anerkannten Grund: Umdeutung (\xA7 140 BGB).
+  Widerruf: nur Verbraucher, 14 Tage ab Kauf, Vertrag endet mit Zugang, voller Betrag.
+  B\xFCndel: ein Kauf mehrerer P\xE4sse auf einem Abo gilt als ein Vertrag (Kanzlei-Frage offen).
+  Ablehnen: nur unzul\xE4ssige Erkl\xE4rungen; eine K\xFCndigung ist ein Gestaltungsrecht und wird best\xE4tigt.
+
+UMGEBUNG UND TOKEN (getrennt vom Content-Token AIDI_API_TOKEN)
+  LERNPLATTFORM_ADMIN_TOKEN          Admin-Token f\xFCr production (Pflicht f\xFCr --env=production)
+  LERNPLATTFORM_STAGING_ADMIN_TOKEN  Admin-Token f\xFCr staging   (Pflicht f\xFCr --env=staging)
+  LERNPLATTFORM_ENV                  Default f\xFCr --env (z\xE4hlt als ausdr\xFCckliches Ziel)
+  LERNPLATTFORM_BASE_URL             \xDCbersteuert die URL (z. B. lokale Instanz), Token nach --env
+  LERNPLATTFORM_STAGING_BASIC_AUTH   user:passwort f\xFCr die nginx-Basic-Auth vor staging.
+                                     Dann: Authorization: Basic \u2026, Token in X-API-Authorization
+  Defaults: production https://app.ausbildung-in-der-it.de, staging https://staging.ausbildung-in-der-it.de
+  Token: Backoffice > System > API Tokens, Besitzer = du selbst (Plattform-Admin),
+  Scopes cancellation-requests:read (list/show/Vorschau) und cancellation-requests:write (confirm/reject/refund).
+
+IO-KONVENTIONEN
+  stdout    Tabelle/Text, mit --json das JSON der API. Vorschau mit --json:
+            {"mode":"preview","changes_state":true|false,"lines":[{"kind","text"}],"data":{\u2026}}
+            changes_state=false: --force w\xFCrde nichts \xE4ndern oder vom Server abgelehnt (409/422)
+  stderr    "Ziel: <url> (<umgebung>)" und Fehler als JSON:
+            {"error":"\u2026","status":409,"code":"paid_amount_unknown","hint":"\u2026","current_status":"pending"}
+  Exit 0    Erfolg, auch Vorschau und already_*/nothing_to_refund
+  Exit 1    Aufruf-/Konfigurationsfehler (Flag, ID, Token fehlt), kein Request verschickt
+  Exit 2    API-Fehler: 401/403 (Token, Scope, Besitzer kein Plattform-Admin, Basic-Auth), 404, 409, 422,
+            502, 5xx oder Server nicht erreichbar (status 0)
+
+BEISPIELE
+  lernplattform kuendigungen list
+  lernplattform kuendigungen list --status=confirmed          # u. a. offene Erstattungen
+  lernplattform kuendigungen show 12
+  lernplattform kuendigungen show 12 --json | jq '.data.refund_execution'
+  lernplattform kuendigungen confirm 12 --env=production                  # Vorschau (Umdeutung bei au\xDFerordentlich)
+  lernplattform kuendigungen confirm 12 --env=production --wichtiger-grund-anerkannt   # Vorschau, sofortige Wirkung
+  lernplattform kuendigungen confirm 12 --env=production --als-widerruf   # Vorschau als Widerruf
+  lernplattform kuendigungen confirm 12 --env=production --notiz="Telefonisch gekl\xE4rt" --force
+  lernplattform kuendigungen refund 12 --env=production                   # Vorschau: Betrag, erstattet, offen
+  lernplattform kuendigungen refund 12 --env=production --force           # ECHTES GELD
+  lernplattform kuendigungen reject 12 --env=production --unzulaessig=duplikat --grund="Bereits am 18.09. gek\xFCndigt"   # Vorschau
+  LERNPLATTFORM_BASE_URL=http://127.0.0.1:8125 lernplattform kuendigungen list
+
+WORKFLOW (f\xFCr Agenten)
+  1) lernplattform kuendigungen list --json 2>/dev/null | jq '.data[] | {id, type, refund_status, warnings: [.warnings[].code]}'
+  2) lernplattform kuendigungen show <id>                  # Warnungen, Wirksamkeit und Erstattung lesen
+  3) lernplattform kuendigungen confirm <id> --env=production [--wichtiger-grund-anerkannt|--als-widerruf]   # Vorschau
+  4) Ansage abwarten, dann confirm <id> \u2026 --force          # Ergebnis auf ACHTUNG-Zeilen pr\xFCfen (Abo)
+  5) lernplattform kuendigungen refund <id> --env=production   # Vorschau zeigen, Betrag nennen
+  6) Erst nach ausdr\xFCcklicher Freigabe: refund <id> --env=production --force
+  Bei ZAHLUNGSBUCH-FEHLT nicht best\xE4tigen: erst Backfill auf dem Server (eigene Ansage), dann erneut pr\xFCfen.
+`;
+
 // src/cli.ts
 loadEnv();
 var handlers = {
@@ -5633,9 +7342,10 @@ var handlers = {
   discussion: run10,
   search: run11,
   "aidi-search": run11,
-  "image-upload": run12
+  "image-upload": run12,
+  kuendigungen: run13
 };
-var HELP_TEXT = `lernplattform - CLI f\xFCr die ausbildung-in-der-it.de Lernplattform
+var HELP_TEXT2 = `lernplattform - CLI f\xFCr die ausbildung-in-der-it.de Lernplattform
 
 USAGE
   lernplattform <bereich> <aktion> [args...] [--flag=wert]
@@ -5653,6 +7363,9 @@ BEREICHE (sortiert nach Datenmodell-Hierarchie)
   discussion                Discussions (list|get|comment|solve|unsolve|update-comment|delete-comment|accept)
   search                    Plattform-Inhalte durchsuchen (Discovery)
   image-upload              Bilder zu AIDI hochladen (CDN-URLs zurueck)
+
+ADMIN (eigener Admin-Token, siehe lernplattform kuendigungen --help)
+  kuendigungen              K\xFCndigungsanfragen (list|show lesend; confirm|reject|refund ver\xE4ndernd, refund = echtes Geld; ohne --force nur Vorschau)
 
 DATENMODELL (grob)
   learning-path
@@ -5673,12 +7386,16 @@ UMGEBUNG
     3) ~/.config/lernplattform/.env
   Pflicht:  AIDI_API_TOKEN
   Optional: AIDI_HOST_URL (default: https://app.ausbildung-in-der-it.de)
+  Admin-Bereiche (kuendigungen) nutzen eigene Variablen:
+            LERNPLATTFORM_ADMIN_TOKEN, LERNPLATTFORM_STAGING_ADMIN_TOKEN,
+            LERNPLATTFORM_ENV (production|staging), LERNPLATTFORM_BASE_URL
 
 IO-KONVENTIONEN (wichtig fuer Skripte und Agenten)
   stdout    Reines JSON aus der API (Erfolg) bzw. MDX-Text (nur lesson mdx)
   stderr    Status-/Debug-Logs ("Listing ...", "Response received in ..s")
   Exit 0    Erfolg
   Exit 1    Fehler. stderr enthaelt JSON: {"error": "..."}
+  Exit 2    nur kuendigungen: API-Fehler (401/403/404/409/422/502/5xx, nicht erreichbar)
   Mit jq    lernplattform <bereich> <aktion> ... 2>/dev/null | jq '...'
             (stderr ausblenden, jq auf stdout)
 
@@ -5773,7 +7490,7 @@ async function main() {
   const argv = process.argv.slice(2);
   const category = argv[0];
   if (!category || category === "--help" || category === "-h" || category === "help") {
-    process.stdout.write(HELP_TEXT);
+    process.stdout.write(HELP_TEXT2);
     return;
   }
   if (category === "--version" || category === "-v") {
@@ -5784,7 +7501,7 @@ async function main() {
   if (!handler) {
     console.error(`Unbekannter Bereich: ${category}
 `);
-    process.stdout.write(HELP_TEXT);
+    process.stdout.write(HELP_TEXT2);
     process.exit(1);
   }
   await handler(argv.slice(1));

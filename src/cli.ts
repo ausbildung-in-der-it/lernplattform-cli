@@ -14,6 +14,7 @@ import { run as runRating } from './commands/rating';
 import { run as runDiscussion } from './commands/discussion';
 import { run as runSearchAidi } from './commands/search-aidi';
 import { run as runImageUpload } from './commands/image-upload';
+import { run as runKuendigungen } from './commands/kuendigungen';
 
 type Handler = (argv: string[]) => Promise<void>;
 
@@ -35,6 +36,7 @@ const handlers: Record<string, Handler> = {
   search: runSearchAidi,
   'aidi-search': runSearchAidi,
   'image-upload': runImageUpload,
+  kuendigungen: runKuendigungen,
 };
 
 const HELP_TEXT = `lernplattform - CLI für die ausbildung-in-der-it.de Lernplattform
@@ -56,6 +58,9 @@ BEREICHE (sortiert nach Datenmodell-Hierarchie)
   search                    Plattform-Inhalte durchsuchen (Discovery)
   image-upload              Bilder zu AIDI hochladen (CDN-URLs zurueck)
 
+ADMIN (eigener Admin-Token, siehe lernplattform kuendigungen --help)
+  kuendigungen              Kündigungsanfragen (list|show lesend; confirm|reject|refund verändernd, refund = echtes Geld; ohne --force nur Vorschau)
+
 DATENMODELL (grob)
   learning-path
     -> path-modules (Zuordnung learning-path <-> module)
@@ -75,12 +80,16 @@ UMGEBUNG
     3) ~/.config/lernplattform/.env
   Pflicht:  AIDI_API_TOKEN
   Optional: AIDI_HOST_URL (default: https://app.ausbildung-in-der-it.de)
+  Admin-Bereiche (kuendigungen) nutzen eigene Variablen:
+            LERNPLATTFORM_ADMIN_TOKEN, LERNPLATTFORM_STAGING_ADMIN_TOKEN,
+            LERNPLATTFORM_ENV (production|staging), LERNPLATTFORM_BASE_URL
 
 IO-KONVENTIONEN (wichtig fuer Skripte und Agenten)
   stdout    Reines JSON aus der API (Erfolg) bzw. MDX-Text (nur lesson mdx)
   stderr    Status-/Debug-Logs ("Listing ...", "Response received in ..s")
   Exit 0    Erfolg
   Exit 1    Fehler. stderr enthaelt JSON: {"error": "..."}
+  Exit 2    nur kuendigungen: API-Fehler (401/403/404/409/422/502/5xx, nicht erreichbar)
   Mit jq    lernplattform <bereich> <aktion> ... 2>/dev/null | jq '...'
             (stderr ausblenden, jq auf stdout)
 
