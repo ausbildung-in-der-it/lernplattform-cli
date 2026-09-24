@@ -93,6 +93,51 @@ export function confirmedDetail(overrides: Partial<CancellationRequestDetail> = 
   });
 }
 
+/** Erklärung vom Kündigungsbutton ohne zugeordneten Vertrag, mit zwei Kandidaten des gefundenen Kontos. */
+export function unmatchedDetail(overrides: Partial<CancellationRequestDetail> = {}): CancellationRequestDetail {
+  const candidate = cancellationDetail().pass as NonNullable<CancellationRequestDetail['pass']>;
+  return cancellationDetail({
+    id: 31,
+    source: 'cancellation_button',
+    received_at: '2026-09-24T10:00:00+02:00',
+    age_days: 0,
+    participant: {
+      user_id: 5,
+      name: 'Mia Muster',
+      email: 'mia@example.com',
+      address: null,
+      address_formatted: null,
+      company_name: null,
+      contract_reference: 'Rechnung RE-7',
+    },
+    pass: null,
+    payment_mode: null,
+    effective_date: {
+      stored: null,
+      recalculated: null,
+      recalculation_explanation: null,
+      recalculation_error: 'Die Erklärung ist noch keinem Vertrag zugeordnet.',
+      recalculated_ends_regularly: false,
+      recalculated_reinterpreted_as_ordinary: false,
+      requested: null,
+    },
+    refund: null,
+    refund_error: 'Die Erklärung ist noch keinem Vertrag zugeordnet.',
+    assignment: {
+      unmatched: true,
+      assigned_at: null,
+      assigned_by: null,
+      account_user_id: 5,
+      candidates: [
+        { ...candidate, user_pass_id: 1954, name: 'AP1 – 12 Monate', holder_email: 'mia@example.com' },
+        { ...candidate, user_pass_id: 1955, name: 'AP2 – 12 Monate', holder_email: 'mia@example.com' },
+      ],
+    },
+    warnings: [{ code: 'unmatched', message: 'Über den Kündigungsbutton eingegangen und keinem eindeutigen Vertrag zugeordnet.' }],
+    ...overrides,
+  });
+}
+
 /** Refund-Block mit überschriebenen Feldern (Fixture-Default ist nicht null). */
 export function refundWith(overrides: Partial<NonNullable<CancellationRequestDetail['refund']>>): NonNullable<CancellationRequestDetail['refund']> {
   return { ...(cancellationDetail().refund as NonNullable<CancellationRequestDetail['refund']>), ...overrides };

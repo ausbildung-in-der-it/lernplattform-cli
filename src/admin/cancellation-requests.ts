@@ -72,6 +72,8 @@ export const WARNING = {
   subscriptionCancellationFailed: 'subscription_cancellation_failed',
   refundFailed: 'refund_failed',
   withdrawalPossible: 'withdrawal_possible',
+  unmatched: 'unmatched',
+  effectiveDateUnknown: 'effective_date_unknown',
 } as const;
 
 /** Bestätigt, Abo vorhanden, aber ohne Enddatum: Stripe cancel_at ist vermutlich fehlgeschlagen. */
@@ -86,6 +88,7 @@ export const CRITICAL_WARNINGS: readonly string[] = [
   WARNING.paidAmountUnknown,
   WARNING.bundleSubscriptionAmbiguous,
   WARNING.companyMultiSeatSubscription,
+  WARNING.unmatched,
 ];
 
 /** Übergangssperre bis AIDI-776: Firmen kündigen Lizenzen einzeln, das ist noch nicht automatisiert. */
@@ -94,6 +97,22 @@ export const COMPANY_MULTI_SEAT_TEXT =
 
 /** Text für paid_amount_unknown in show, Liste und Vorschau. */
 export const LEDGER_MISSING_TEXT = 'Bestätigen gesperrt, Zahlungsbuch fehlt (Backfill)';
+
+/** Text für unmatched: Erklärung vom Kündigungsbutton ohne Vertrag (AIDI-771). */
+export const UNMATCHED_TEXT = 'Keinem Vertrag zugeordnet, Bestätigen gesperrt: erst zuordnen <id> --pass=<user_pass_id>';
+
+/** Woher eine Erklärung kam (source der API). */
+export type CancellationSource = 'account_form' | 'cancellation_button';
+
+export const SOURCE_LABELS: Record<CancellationSource, string> = {
+  account_form: 'Kündigungsformular im Konto',
+  cancellation_button: 'Kündigungsbutton (öffentlich, § 312k/§ 356a BGB)',
+};
+
+export function sourceLabel(source: string | null | undefined): string {
+  if (!source) return SOURCE_LABELS.account_form;
+  return SOURCE_LABELS[source as CancellationSource] ?? source;
+}
 
 export interface CancellationWarning {
   code: string;
@@ -117,6 +136,13 @@ export interface CancellationRequestSummary {
   payment_mode: PaymentMode | null;
   refund_status: RefundStatus;
   warnings: CancellationWarning[];
+  /** Quelle der Erklärung (ab AIDI-771), fehlt bei älteren Servern */
+  source?: CancellationSource;
+  /** Kündigungsbutton ohne eindeutigen Vertrag: pass_name und effective_date sind null */
+  unmatched?: boolean;
+  /** Angaben des Absenders zum Vertrag bzw. zur Firma */
+  contract_reference?: string | null;
+  company_name?: string | null;
 }
 
 export interface CancellationRequestListResponse {
@@ -127,6 +153,7 @@ export interface CancellationRequestListResponse {
     per_page: number;
     total: number;
     status: CancellationStatusFilter;
+    unmatched?: boolean;
   };
 }
 
@@ -180,24 +207,18 @@ export interface CancellationRequestDetail {
   withdrawal_refund_due_at: string | null;
   age_days: number;
   participant: {
-    user_id: number;
+    /** null, wenn zum Absender kein Konto gefunden wurde */
+    user_id: number | null;
     name: string;
     email: string;
     address: { street: string | null; zip: string | null; city: string | null } | null;
     address_formatted: string | null;
+    /** Angaben auf dem Kündigungsbutton */
+    company_name?: string | null;
+    contract_reference?: string | null;
   };
-  /** null, wenn der Pass gelöscht ist (Warnung user_pass_missing) */
-  pass: {
-    user_pass_id: number;
-    name: string;
-    duration_months: number | null;
-    purchased_at: string | null;
-    activated_at: string | null;
-    valid_until: string | null;
-    user_pass_status: string | null;
-    is_b2b: boolean;
-    company_name: string | null;
-  } | null;
+  /** null, wenn der Pass gelöscht (Warnung user_pass_missing) oder noch nicht zugeordnet ist (Warnung unmatched) */
+  pass: CancellationPass | null;
   payment_mode: PaymentMode | null;
   subscription: {
     stripe_id: string;
@@ -213,6 +234,8 @@ export interface CancellationRequestDetail {
     recalculation_error: string | null;
     recalculated_ends_regularly: boolean;
     recalculated_reinterpreted_as_ordinary: boolean;
+    /** vom Absender gewünschter späterer Termin (YYYY-MM-DD), null = nächstmöglich */
+    requested?: string | null;
   };
   refund: CancellationRefund | null;
   refund_error: string | null;
@@ -233,6 +256,32 @@ export interface CancellationRequestDetail {
     rejection_ground?: RejectionGround | null;
   };
   warnings: CancellationWarning[];
+  source?: CancellationSource;
+  assignment?: CancellationAssignment | null;
+}
+
+export interface CancellationPass {
+  user_pass_id: number;
+  name: string;
+  duration_months: number | null;
+  purchased_at: string | null;
+  activated_at: string | null;
+  valid_until: string | null;
+  user_pass_status: string | null;
+  is_b2b: boolean;
+  company_name: string | null;
+  /** Inhaberin der Lizenz (bei Firmenlizenzen die Mitarbeiterin) */
+  holder_name?: string | null;
+  holder_email?: string | null;
+}
+
+/** Zuordnung zum Vertrag (AIDI-771). candidates nur, solange offen und nicht zugeordnet. */
+export interface CancellationAssignment {
+  unmatched: boolean;
+  assigned_at: string | null;
+  assigned_by: { id: number; name: string | null; email: string } | null;
+  account_user_id: number | null;
+  candidates: CancellationPass[];
 }
 
 export interface CancellationRequestResponse {
@@ -252,6 +301,13 @@ export interface CancellationRefundResponse {
   meta: { result: CancellationRefundResult };
 }
 
+export type CancellationAssignmentResult = 'assigned' | 'already_assigned';
+
+export interface CancellationAssignmentResponse {
+  data: CancellationRequestDetail;
+  meta: { result: CancellationAssignmentResult };
+}
+
 // ============================================================================
 // API-Aufrufe
 // ============================================================================
@@ -260,12 +316,13 @@ const BASE_PATH = '/cancellation-requests';
 
 export async function listCancellationRequests(
   client: AdminApiClient,
-  options: { status?: CancellationStatusFilter; page?: number; perPage?: number } = {}
+  options: { status?: CancellationStatusFilter; page?: number; perPage?: number; onlyUnmatched?: boolean } = {}
 ): Promise<CancellationRequestListResponse> {
   return client.get<CancellationRequestListResponse>(BASE_PATH, {
     status: options.status,
     page: options.page,
     per_page: options.perPage,
+    unmatched: options.onlyUnmatched ? 1 : undefined,
   });
 }
 
@@ -298,6 +355,20 @@ export async function rejectCancellationRequest(
   return client.post<CancellationActionResponse>(
     `${BASE_PATH}/${id}/rejection`,
     { rejection_ground: rejectionGround, rejection_reason: rejectionReason },
+    { idempotencyKey: options.idempotencyKey }
+  );
+}
+
+/** Ordnet eine Erklärung einem Pass zu; das Wirksamkeitsdatum rechnet der Server ab Eingang. */
+export async function assignCancellationRequest(
+  client: AdminApiClient,
+  id: number,
+  userPassId: number,
+  options: { idempotencyKey?: string } = {}
+): Promise<CancellationAssignmentResponse> {
+  return client.post<CancellationAssignmentResponse>(
+    `${BASE_PATH}/${id}/assignment`,
+    { user_pass_id: userPassId },
     { idempotencyKey: options.idempotencyKey }
   );
 }
@@ -383,6 +454,8 @@ export const SHORT_WARNING_LABELS: Record<string, string> = {
   [WARNING.subscriptionCancellationFailed]: 'ABO-KUENDIGUNG-FEHLGESCHLAGEN',
   [WARNING.refundFailed]: 'ERSTATTUNG-FEHLGESCHLAGEN',
   [WARNING.withdrawalPossible]: 'widerruf-moeglich',
+  [WARNING.unmatched]: 'NICHT-ZUGEORDNET',
+  [WARNING.effectiveDateUnknown]: 'datum-offen',
 };
 
 export function shortWarningLabel(code: string): string {
@@ -736,6 +809,19 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
     };
   }
 
+  if (hasWarning(detail.warnings, WARNING.unmatched)) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: 'blocked',
+          text: `${label}: ${UNMATCHED_TEXT}. Ein Aufruf mit --force wird mit 409 unmatched abgelehnt. Kandidaten zeigt show ${detail.id}; gibt es keinen Vertrag, reject --unzulaessig=falscher-vertrag.`,
+        },
+        ...warningLines(detail.warnings, [WARNING.unmatched]),
+      ],
+    };
+  }
+
   if (!detail.pass) {
     return {
       changesState: false,
@@ -905,6 +991,79 @@ export function buildRejectionPreview(detail: CancellationRequestDetail, rejecti
 // ---------------------------------------------------------------------------
 // refund
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Zuordnung (zuordnen <id> --pass=<user_pass_id>), AIDI-771
+// ---------------------------------------------------------------------------
+
+function passText(pass: CancellationPass): string {
+  const holder = pass.is_b2b ? pass.company_name : pass.holder_email ?? pass.holder_name;
+  return `Pass #${pass.user_pass_id} ${pass.name}${holder ? ` (${holder})` : ''}`;
+}
+
+export function buildAssignmentPreview(detail: CancellationRequestDetail, userPassId: number): ActionPreview {
+  const label = `Kündigung #${detail.id}`;
+
+  if (detail.status !== 'pending') {
+    return {
+      changesState: false,
+      lines: [
+        { kind: 'blocked', text: `${label} ist ${detail.status_label.toLowerCase()} (${detail.status}), zuordnen geht nur bei offenen Anfragen.` },
+        { kind: 'note', text: 'Ein Aufruf mit --force wird vom Server mit 409 (Konflikt) abgelehnt.' },
+      ],
+    };
+  }
+
+  if (detail.pass?.user_pass_id === userPassId) {
+    return {
+      changesState: false,
+      lines: [
+        { kind: 'note', text: `${label} ist bereits ${passText(detail.pass)} zugeordnet. Ein Aufruf mit --force ändert nichts (already_assigned).` },
+      ],
+    };
+  }
+
+  const candidates = detail.assignment?.candidates ?? [];
+  const candidate = candidates.find((pass) => pass.user_pass_id === userPassId);
+  const lines: PreviewLine[] = [
+    { kind: 'action', text: `${label} wird ${candidate ? passText(candidate) : `Pass #${userPassId}`} zugeordnet.` },
+    {
+      kind: 'note',
+      text: `Das Wirksamkeitsdatum rechnet der Server ab Eingang (${formatGermanDateTime(detail.received_at)}); das Konto wird Vertragspartner des Passes (bei Firmenlizenzen die Firma).`,
+    },
+    { kind: 'note', text: `Keine Mail, kein Stripe-Aufruf. Danach wie gewohnt: confirm ${detail.id}.` },
+  ];
+
+  if (detail.pass) {
+    lines.push({ kind: 'warning', text: `Ersetzt die bisherige Zuordnung zu ${passText(detail.pass)}.` });
+  }
+  if (!candidate) {
+    lines.push({
+      kind: 'warning',
+      text:
+        candidates.length > 0
+          ? `Pass #${userPassId} ist keiner der Kandidaten des gefundenen Kontos (${candidates.map((pass) => `#${pass.user_pass_id}`).join(', ')}). Bitte prüfen, ob die Erklärung wirklich diesen Vertrag meint.`
+          : `Zum Absender wurde kein Konto mit laufenden Verträgen gefunden. Bitte prüfen, ob die Erklärung wirklich Pass #${userPassId} meint (Name, E-Mail, Angabe zum Vertrag).`,
+    });
+  }
+
+  lines.push(...warningLines(detail.warnings, [WARNING.unmatched]), EXECUTE_HINT);
+  return { changesState: true, lines };
+}
+
+export function buildAssignmentResultLines(response: CancellationAssignmentResponse): PreviewLine[] {
+  const detail = response.data;
+  const lines: PreviewLine[] = [
+    response.meta.result === 'assigned'
+      ? { kind: 'action', text: `Kündigung #${detail.id} zugeordnet${detail.pass ? `: ${passText(detail.pass)}` : ''}.` }
+      : { kind: 'note', text: `Kündigung #${detail.id} war bereits diesem Pass zugeordnet, nichts geändert.` },
+    { kind: 'note', text: `Wirksam zum (berechnet ab Eingang): ${formatGermanDate(detail.effective_date.stored)}` },
+    { kind: 'hint', text: `Nächster Schritt: lernplattform kuendigungen confirm ${detail.id} --env=… (Vorschau).` },
+  ];
+
+  lines.splice(2, 0, ...warningLines(detail.warnings));
+  return lines;
+}
 
 export const REAL_MONEY_TEXT = 'ECHTES GELD: refund --force zahlt über Stripe an den Teilnehmer aus. Nicht umkehrbar.';
 
@@ -1169,6 +1328,10 @@ export const ERROR_CODE_HINTS: Record<string, string> = {
   paid_amount_unknown: `${LEDGER_MISSING_TEXT}: auf dem Server php artisan pass:backfill-payments, dann erneut.`,
   not_confirmed: 'Erst bestätigen (confirm <id>), dann erstatten.',
   refund_in_progress: 'Es läuft bereits eine Erstattung. Nach 10 Minuten erneut versuchen und vorher mit show <id> den Stand prüfen.',
+  unmatched:
+    'Die Erklärung kam über den Kündigungsbutton und ist keinem Vertrag zugeordnet. Kandidaten mit show <id>, dann zuordnen <id> --pass=<user_pass_id> --force. Ohne Vertrag: reject --unzulaessig=falscher-vertrag.',
+  duplicate:
+    'Für diesen Pass liegt schon eine offene Kündigung vor. Diese Erklärung ist dann ein Duplikat: reject <id> --unzulaessig=duplikat.',
   user_pass_missing:
     'Der Pass ist gelöscht: Bestätigen und Erstatten lassen sich nicht berechnen. Pass wiederherstellen oder die Erklärung als unzulässig ablehnen (reject --unzulaessig=falscher-vertrag), Geld manuell in Stripe klären.',
   refund_failed: 'Stripe hat die Erstattung abgelehnt. Bereits erstattete Anteile sind gebucht; Ursache in Stripe prüfen, dann refund <id> --force erneut (zahlt nicht doppelt).',

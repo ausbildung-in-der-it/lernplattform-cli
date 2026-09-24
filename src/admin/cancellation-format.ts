@@ -9,6 +9,8 @@ import {
   DASH,
   LEDGER_MISSING_TEXT,
   REJECTION_GROUND_LABELS,
+  UNMATCHED_TEXT,
+  sourceLabel,
   SHORT_REFUND_STATUS_LABELS,
   WARNING,
   formatEuroCents,
@@ -171,7 +173,7 @@ export function renderCancellationList(response: CancellationRequestListResponse
     received: formatGermanDate(item.received_at),
     age: `${item.age_days} T`,
     name: item.participant_name,
-    pass: orDash(item.pass_name),
+    pass: item.unmatched ? c.red(c.bold('nicht zugeordnet')) : orDash(item.pass_name),
     type: listTypeText(item, c),
     effective: formatGermanDate(item.effective_date),
     payment: paymentModeLabel(item.payment_mode),
@@ -187,8 +189,10 @@ export function renderCancellationList(response: CancellationRequestListResponse
 
   const ledgerMissing = data.filter((item) => hasWarning(item.warnings, WARNING.paidAmountUnknown)).map((item) => `#${item.id}`);
   const ledgerNote = ledgerMissing.length > 0 ? `\n${c.red(c.bold(`${LEDGER_MISSING_TEXT}: ${ledgerMissing.join(', ')}`))}` : '';
+  const unmatched = data.filter((item) => item.unmatched).map((item) => `#${item.id}`);
+  const unmatchedNote = unmatched.length > 0 ? `\n${c.red(c.bold(`${UNMATCHED_TEXT}: ${unmatched.join(', ')}`))}` : '';
 
-  return `${renderTable(rows, columns, c)}\n\n${footer}${ledgerNote}`;
+  return `${renderTable(rows, columns, c)}\n\n${footer}${ledgerNote}${unmatchedNote}`;
 }
 
 // ============================================================================
@@ -216,6 +220,7 @@ function effectiveDateSection(detail: CancellationRequestDetail, c: Palette): st
     detail.effective_date.recalculated_ends_regularly ? 'endet regulär zum Vertragsende' : '',
   ].filter(Boolean);
   if (flags.length > 0) pairs.push(['Hinweis', flags.join(', ')]);
+  if (detail.effective_date.requested) pairs.push(['Wunschtermin', formatGermanDate(detail.effective_date.requested)]);
   if (explanation) pairs.push(['Berechnung', explanation]);
   if (error) pairs.push(['Fehler', c.red(error)]);
   return section('Wirksamkeitsdatum', keyValues(pairs, c), c);
@@ -301,9 +306,26 @@ function subscriptionCancellationSection(detail: CancellationRequestDetail, c: P
   return section('Abo-Kündigung (Bestätigung)', keyValues(pairs, c), c);
 }
 
+/** Nicht zugeordnete Erklärung: Kandidaten des gefundenen Kontos für zuordnen --pass. */
+function unmatchedPassBody(detail: CancellationRequestDetail, c: Palette): string {
+  const candidates = detail.assignment?.candidates ?? [];
+  const head = c.red(c.bold('  nicht zugeordnet (unmatched)'));
+  if (candidates.length === 0) {
+    return `${head}\n${c.dim('  kein Konto mit laufenden Verträgen zum Absender gefunden')}`;
+  }
+  const lines = candidates.map((pass) => {
+    const holder = pass.is_b2b ? `Firma ${orDash(pass.company_name)}, ${orDash(pass.holder_email)}` : orDash(pass.holder_email);
+    return `  --pass=${pass.user_pass_id}  ${pass.name} · gekauft ${formatGermanDate(pass.purchased_at)} · ${holder}`;
+  });
+  return `${head}\n${c.dim(`  Kandidaten (Konto #${detail.assignment?.account_user_id ?? DASH}):`)}\n${lines.join('\n')}`;
+}
+
 /** Gesperrte Schritte ganz oben, damit sie niemand überliest. */
 function blockerBanner(detail: CancellationRequestDetail, c: Palette): string | null {
   const banners: string[] = [];
+  if (hasWarning(detail.warnings, WARNING.unmatched)) {
+    banners.push(`! ${UNMATCHED_TEXT}. Ohne Vertrag: reject ${detail.id} --unzulaessig=falscher-vertrag.`);
+  }
   if (hasWarning(detail.warnings, WARNING.paidAmountUnknown)) {
     banners.push(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`);
   }
@@ -335,6 +357,7 @@ export function renderCancellationDetail(detail: CancellationRequestDetail, c: P
   }
   requestPairs.push(
     ['Eingang', `${formatGermanDateTime(detail.received_at)} (vor ${detail.age_days} Tagen)`],
+    ['Quelle', sourceLabel(detail.source)],
     ['Grund', orDash(detail.reason)],
     ['Zahlungsart', paymentModeLabel(detail.payment_mode)]
   );
@@ -348,7 +371,9 @@ export function renderCancellationDetail(detail: CancellationRequestDetail, c: P
         ['Name', participant.name],
         ['E-Mail', participant.email],
         ['Adresse', orDash(participant.address_formatted)],
-        ['User-ID', participant.user_id],
+        ['User-ID', participant.user_id ?? 'kein Konto gefunden'],
+        ...(participant.company_name ? ([['Firma (Angabe)', participant.company_name]] as [string, string][]) : []),
+        ...(participant.contract_reference ? ([['Vertrag (Angabe)', participant.contract_reference]] as [string, string][]) : []),
       ],
       c
     ),
@@ -372,7 +397,9 @@ export function renderCancellationDetail(detail: CancellationRequestDetail, c: P
         ),
         c
       )
-    : section('Pass', c.red('  gelöscht oder nicht mehr verknüpft (user_pass_missing)'), c);
+    : detail.assignment?.unmatched
+      ? section('Pass', unmatchedPassBody(detail, c), c)
+      : section('Pass', c.red('  gelöscht oder nicht mehr verknüpft (user_pass_missing)'), c);
 
   const subscriptionSection = subscription
     ? section(

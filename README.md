@@ -132,7 +132,7 @@ lernplattform search "datenbanken"
 | `discussion` | – | list, get, comment, solve, unsolve, update-comment, delete-comment, accept |
 | `search` | `aidi-search` | (Argument: Query-String) |
 | `image-upload` | – | (Argument: Pfad zur Bilddatei) |
-| `kuendigungen` | – | list, show, confirm, reject, refund (Admin-API, eigener Token, siehe unten) |
+| `kuendigungen` | – | list, show, zuordnen, confirm, reject, refund (Admin-API, eigener Token, siehe unten) |
 
 Detaillierte Hilfe pro Bereich:
 
@@ -148,6 +148,7 @@ Kündigungsanfragen der Plattform prüfen und bearbeiten, über die Admin-API `/
 ### Ablauf: prüfen → confirm → refund
 
 1. **Prüfen** (lesend, frei): `list` und `show <id>`. Warnungen, Wirksamkeitsdatum und berechnete Erstattung lesen.
+1a. **Zuordnen** (nur Warnung `NICHT-ZUGEORDNET`): Erklärungen vom öffentlichen Kündigungsbutton (§ 312k/§ 356a BGB), die keinem eindeutigen Vertrag zugeordnet werden konnten. `show <id>` listet die Kandidaten des gefundenen Kontos, `zuordnen <id> --pass=<user_pass_id>` zeigt die Vorschau, mit `--force` wird zugeordnet. Die Plattform rechnet das Wirksamkeitsdatum ab Eingang. Keine Mail, kein Stripe.
 2. **Bestätigen**: `confirm <id>` zeigt die Vorschau, `confirm <id> --force` bestätigt. Legt das Wirksamkeitsdatum fest, beendet den Zugang, kündigt das Stripe-Abo und schickt die Bestätigungsmail. **Löst keine Erstattung aus.**
 3. **Erstatten**: `refund <id>` zeigt Betrag, bereits erstattet, offen und die Zahlungsbasis. `refund <id> --force` zahlt über Stripe aus. **Das ist echtes Geld und nicht umkehrbar.**
 
@@ -155,10 +156,13 @@ Kündigungsanfragen der Plattform prüfen und bearbeiten, über die Admin-API `/
 # Lesend, frei
 lernplattform kuendigungen list                          # offene Anfragen (pending), älteste zuerst
 lernplattform kuendigungen list --status=all --page=2    # pending|confirmed|rejected|withdrawn|all
+lernplattform kuendigungen list --nicht-zugeordnet       # Kündigungsbutton ohne eindeutigen Vertrag
 lernplattform kuendigungen show 12                       # Teilnehmer, Pass, Abo, Wirksamkeit, Erstattung, Warnungen
 lernplattform kuendigungen show 12 --json
 
 # VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau
+lernplattform kuendigungen zuordnen 31 --env=production --pass=1954                  # Vorschau: Erklärung einem Pass zuordnen
+lernplattform kuendigungen zuordnen 31 --env=production --pass=1954 --force
 lernplattform kuendigungen confirm 12 --env=production                               # Vorschau
 lernplattform kuendigungen confirm 12 --env=production --wichtiger-grund-anerkannt   # Vorschau: außerordentlich mit sofortiger Wirkung
 lernplattform kuendigungen confirm 12 --env=production --als-widerruf                # Vorschau: als Widerruf behandeln (nur Verbraucher)
@@ -172,7 +176,7 @@ lernplattform kuendigungen refund 12 --env=production            # Vorschau: Bet
 lernplattform kuendigungen refund 12 --env=production --force    # zahlt über Stripe aus
 ```
 
-> **`confirm`, `reject` und `refund` sind verändernd und nur nach ausdrücklicher Ansage mit `--force` auszuführen.** `confirm --force` und `reject --force` schicken eine Mail an den echten Teilnehmer. `confirm --force` kündigt außerdem das Stripe-Abo. `refund --force` zahlt echtes Geld über Stripe aus. Ohne `--force` zeigen alle drei nur, was passieren würde (ein GET, Exit 0). Wer die CLI von einem Agenten bedienen lässt: Vorschau zeigen lassen, dann selbst freigeben.
+> **`zuordnen`, `confirm`, `reject` und `refund` sind verändernd und nur nach ausdrücklicher Ansage mit `--force` auszuführen.** `confirm --force` und `reject --force` schicken eine Mail an den echten Teilnehmer. `confirm --force` kündigt außerdem das Stripe-Abo. `refund --force` zahlt echtes Geld über Stripe aus. Ohne `--force` zeigen alle drei nur, was passieren würde (ein GET, Exit 0). Wer die CLI von einem Agenten bedienen lässt: Vorschau zeigen lassen, dann selbst freigeben.
 
 ### Rechtlicher Rahmen: § 5 FernUSG, Umdeutung, Widerruf
 

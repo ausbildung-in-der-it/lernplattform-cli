@@ -2,11 +2,12 @@
  * Kündigungen CLI - Kündigungsanfragen über die Admin-API der Plattform (AIDI-764, AIDI-749)
  *
  * Usage:
- *   lernplattform kuendigungen list [--status=pending|confirmed|rejected|withdrawn|all] [--page=N] [--per-page=N] [--json]
+ *   lernplattform kuendigungen list [--status=pending|confirmed|rejected|withdrawn|all] [--nicht-zugeordnet] [--page=N] [--per-page=N] [--json]
  *   lernplattform kuendigungen show <id> [--json]
  *   lernplattform kuendigungen confirm <id> [--wichtiger-grund-anerkannt] [--notiz="..."] [--force] [--json]
  *   lernplattform kuendigungen reject <id> --unzulaessig=<art> --grund="..." [--force] [--json]
  *   lernplattform kuendigungen refund <id> [--force] [--json]
+ *   lernplattform kuendigungen zuordnen <id> --pass=<user_pass_id> [--force] [--json]
  *
  * Alle Befehle: [--env=production|staging]
  */
@@ -27,7 +28,10 @@ import {
   REJECTION_GROUNDS,
   parseRejectionGround,
   REAL_MONEY_TEXT,
+  assignCancellationRequest,
   buildActionResultLines,
+  buildAssignmentPreview,
+  buildAssignmentResultLines,
   buildConfirmationPreview,
   buildRefundPreview,
   buildRefundResultLines,
@@ -69,15 +73,16 @@ export interface CommandIo {
 
 const COMMON_FLAGS = ['env', 'json', 'help'];
 const ALLOWED_FLAGS: Record<string, string[]> = {
-  list: [...COMMON_FLAGS, 'status', 'page', 'per-page'],
+  list: [...COMMON_FLAGS, 'status', 'page', 'per-page', 'nicht-zugeordnet'],
   show: [...COMMON_FLAGS],
   confirm: [...COMMON_FLAGS, 'notiz', 'notiz-stdin', 'notiz-base64', 'wichtiger-grund-anerkannt', 'als-widerruf', 'force'],
   reject: [...COMMON_FLAGS, 'unzulaessig', 'grund', 'grund-stdin', 'grund-base64', 'force'],
   refund: [...COMMON_FLAGS, 'force'],
+  zuordnen: [...COMMON_FLAGS, 'pass', 'force'],
 };
 
 /** Befehle, die Daten ändern: nie still gegen production (requireExplicitEnvironment). */
-const WRITE_OPERATIONS = ['confirm', 'reject', 'refund'];
+const WRITE_OPERATIONS = ['confirm', 'reject', 'refund', 'zuordnen'];
 
 const IMPORTANT_REASON_FLAG = 'wichtiger-grund-anerkannt';
 const TREAT_AS_WITHDRAWAL_FLAG = 'als-widerruf';
@@ -178,6 +183,7 @@ async function list(client: AdminApiClient, args: ParsedArgs, io: CommandIo): Pr
     status: parseStatus(args.flags.status),
     page: parsePositiveInt(args.flags.page, 'page'),
     perPage: parsePositiveInt(args.flags['per-page'], 'per-page', MAX_PER_PAGE),
+    onlyUnmatched: switchFlag(args, 'nicht-zugeordnet'),
   });
 
   io.out(isJson(args) ? JSON.stringify(response, null, 2) : renderCancellationList(response, io.palette));
@@ -258,6 +264,34 @@ async function refund(client: AdminApiClient, args: ParsedArgs, io: CommandIo, t
   writeResult(io, args, response, buildRefundResultLines(response));
 }
 
+/** --pass=<user_pass_id>: Pflicht für zuordnen. */
+function parsePassId(args: ParsedArgs): number {
+  const value = args.flags.pass;
+  if (value === undefined || value === true) {
+    throw new AdminUsageError('--pass=<user_pass_id> ist Pflicht. Kandidaten zeigt: lernplattform kuendigungen show <id>');
+  }
+  const passId = parsePositiveInt(value, 'pass');
+  if (passId === undefined) {
+    throw new AdminUsageError('--pass=<user_pass_id> ist Pflicht.');
+  }
+  return passId;
+}
+
+async function zuordnen(client: AdminApiClient, args: ParsedArgs, io: CommandIo, target: AdminApiTarget): Promise<void> {
+  const id = parseId(args);
+  const userPassId = parsePassId(args);
+
+  if (!isForce(args)) {
+    const { data: detail } = await getCancellationRequest(client, id);
+    const preview = buildAssignmentPreview(detail, userPassId);
+    writePreview(io, args, target, preview.changesState, preview.lines, detail);
+    return;
+  }
+
+  const response = await assignCancellationRequest(client, id, userPassId);
+  writeResult(io, args, response, buildAssignmentResultLines(response));
+}
+
 function writePreview(
   io: CommandIo,
   args: ParsedArgs,
@@ -316,6 +350,7 @@ const OPERATIONS: Record<string, (client: AdminApiClient, args: ParsedArgs, io: 
   confirm,
   reject,
   refund,
+  zuordnen,
 };
 
 /** Führt einen kuendigungen-Befehl aus und liefert den Exit-Code (testbar ohne process.exit). */
@@ -376,12 +411,13 @@ const HELP_TEXT = `lernplattform kuendigungen - Kündigungsanfragen über die Ad
 USAGE
   lernplattform kuendigungen <aktion> [id] [--flag=wert]
 
-ABLAUF: prüfen → confirm → refund
+ABLAUF: prüfen → (zuordnen) → confirm → refund
   1) list / show            lesen, Warnungen und Berechnung prüfen (frei)
+     zuordnen <id>          nur bei NICHT-ZUGEORDNET: Erklärung vom Kündigungsbutton einem Pass zuordnen
   2) confirm <id>           Kündigung bestätigen: Wirksamkeit, Zugangsende, Stripe-Abo, Mail.
                             Löst KEINE Erstattung aus.
   3) refund <id>            Erstattung über Stripe auszahlen. ECHTES GELD.
-  confirm, reject und refund sind VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau.
+  confirm, reject, refund und zuordnen sind VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau.
   Sie brauchen immer ein ausdrückliches Ziel (--env=production|staging oder $LERNPLATTFORM_ENV),
   sonst brechen sie ab, auch die Vorschau.
 
@@ -396,6 +432,9 @@ AKTIONEN
                        abgelehnt. VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau
   refund <id>          Berechnete Erstattung über Stripe auszahlen. VERÄNDERND, ECHTES GELD, nur nach
                        ausdrücklicher Ansage. Ohne --force nur Vorschau
+  zuordnen <id>        Erklärung vom Kündigungsbutton (§ 312k/§ 356a BGB), die keinem Vertrag zugeordnet
+                       ist, einem Pass zuordnen. Der Server rechnet das Wirksamkeitsdatum ab Eingang.
+                       Keine Mail, kein Stripe. VERÄNDERND, nur nach Ansage. Ohne --force nur Vorschau
 
 FLAGS
   --env=production|staging   Zielumgebung. Lesend (list, show): Default $LERNPLATTFORM_ENV, sonst
@@ -406,6 +445,7 @@ FLAGS
     --status=S               pending (Default) | confirmed | rejected | withdrawn | all
     --page=N                 Seite (ab 1)
     --per-page=N             Einträge pro Seite (Server-Default 25, max ${MAX_PER_PAGE})
+    --nicht-zugeordnet       Nur Erklärungen ohne zugeordneten Vertrag (Kündigungsbutton, unmatched)
   confirm:
     --wichtiger-grund-anerkannt  Nur außerordentliche Kündigung: wichtiger Grund anerkannt (§ 314 BGB),
                              sofortige Wirkung. Ohne das Flag gilt sie als ordentliche Kündigung zum
@@ -426,6 +466,9 @@ FLAGS
                              withdrawal_not_available gehen auch)
     --grund="…"              Pflicht. Begründung, geht per Mail an den Teilnehmer (max ${MAX_TEXT_LENGTH} Zeichen)
     --force                  Wirklich ausführen
+  zuordnen:
+    --pass=N                 Pflicht. UserPass-ID; Kandidaten des gefundenen Kontos zeigt show <id>
+    --force                  Wirklich zuordnen
   refund:
     --force                  Wirklich auszahlen (Stripe-Refund). Kein Betrag wählbar: immer die berechnete
                              Erstattung minus bereits erstattet
@@ -441,7 +484,9 @@ WAS DIE BEFEHLE MIT --force AUSLÖSEN
                      endet zum selben Zeitpunkt (subscription_cancellation.bundle_user_pass_ids).
                      Firmen-Abo mit mehreren Lizenzen: kein Bündel, Lizenzen werden einzeln gekündigt.
                      Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous,
-                     company_multi_seat_subscription, user_pass_missing.
+                     company_multi_seat_subscription, user_pass_missing, unmatched.
+  zuordnen --force → Pass wird zugeordnet, Wirksamkeitsdatum ab Eingang neu berechnet, Konto = Vertragspartner.
+                     Keine Mail, kein Stripe. Danach confirm wie gewohnt.
   reject --force   → Status "rejected" mit rejection_ground, Ablehnungsmail mit --grund an den Teilnehmer.
   refund --force   → Stripe-Refund(s) über die Zahlungen des Vertrags, neueste zuerst, auf das beim Kauf
                      genutzte Zahlungsmittel. Echtes Geld, nicht umkehrbar. Nur für bestätigte Anfragen
@@ -457,10 +502,13 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
             409 conflict (anderer Status) | paid_amount_unknown (Zahlungsbuch fehlt, Backfill nötig)
                 | bundle_subscription_ambiguous (Abo bezahlt Pässe eines anderen Kaufs)
                 | company_multi_seat_subscription (Firmen-Abo mit mehreren Lizenzen, AIDI-776)
-                | user_pass_missing (Pass gelöscht)
+                | user_pass_missing (Pass gelöscht) | unmatched (erst zuordnen)
             422 unprocessable (Flag passt nicht zur Anfrage, z. B. Widerruf bei Firmenpass)
   reject    200 rejected | already_rejected       409 conflict
             422 unprocessable (--unzulaessig passt nicht, z. B. widerruf-ausgeschlossen bei Kündigung)
+  zuordnen  200 assigned | already_assigned
+            409 conflict (nicht mehr offen) | duplicate (Pass hat schon eine offene Kündigung)
+            422 unprocessable (Pass kostenlos) / Validierungsfehler (Pass existiert nicht)
   refund    200 refunded | already_refunded | nothing_to_refund
             409 not_confirmed | paid_amount_unknown | refund_in_progress | user_pass_missing
             422 unprocessable (keine Erstattung berechenbar)
@@ -468,6 +516,11 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
                 möglich, bereits erstattete Anteile werden nicht doppelt gezahlt)
 
 WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; VERSALIEN = kritisch)
+  NICHT-ZUGEORDNET         unmatched: über den Kündigungsbutton eingegangen, kein eindeutiger Vertrag.
+                           Wirkt trotzdem ab Eingang. Bestätigen gesperrt: show <id> (Kandidaten), dann
+                           zuordnen <id> --pass=N; ohne Vertrag reject --unzulaessig=falscher-vertrag
+  datum-offen              effective_date_unknown: zugeordnet, aber für diese Art kein Datum berechenbar
+                           (z. B. ordentlich bei 3-Monats-Pass). Art klären
   ZAHLUNGSBUCH-FEHLT       paid_amount_unknown: Bestätigen gesperrt, Zahlungsbuch fehlt (Backfill:
                            php artisan pass:backfill-payments). Erstatten ebenso
   ABO-BUENDEL-UNKLAR       bundle_subscription_ambiguous: Abo bezahlt Pässe eines anderen Kaufs,
@@ -528,6 +581,8 @@ IO-KONVENTIONEN
 BEISPIELE
   lernplattform kuendigungen list
   lernplattform kuendigungen list --status=confirmed          # u. a. offene Erstattungen
+  lernplattform kuendigungen list --nicht-zugeordnet          # Kündigungsbutton ohne Vertrag
+  lernplattform kuendigungen zuordnen 31 --pass=1954 --env=production   # Vorschau
   lernplattform kuendigungen show 12
   lernplattform kuendigungen show 12 --json | jq '.data.refund_execution'
   lernplattform kuendigungen confirm 12 --env=production                  # Vorschau (Umdeutung bei außerordentlich)

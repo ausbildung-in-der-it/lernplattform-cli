@@ -5881,7 +5881,9 @@ var WARNING = {
   refundOutstanding: "refund_outstanding",
   subscriptionCancellationFailed: "subscription_cancellation_failed",
   refundFailed: "refund_failed",
-  withdrawalPossible: "withdrawal_possible"
+  withdrawalPossible: "withdrawal_possible",
+  unmatched: "unmatched",
+  effectiveDateUnknown: "effective_date_unknown"
 };
 var STRIPE_CANCEL_MISSING_WARNING = WARNING.subscriptionCancelAtMissing;
 var CRITICAL_WARNINGS = [
@@ -5891,16 +5893,27 @@ var CRITICAL_WARNINGS = [
   WARNING.refundFailed,
   WARNING.paidAmountUnknown,
   WARNING.bundleSubscriptionAmbiguous,
-  WARNING.companyMultiSeatSubscription
+  WARNING.companyMultiSeatSubscription,
+  WARNING.unmatched
 ];
 var COMPANY_MULTI_SEAT_TEXT = "Firmen-Abo mit mehreren Lizenzen, Teilk\xFCndigung ist noch nicht automatisiert (AIDI-776). In Stripe die Menge zum Wirksamkeitsdatum manuell reduzieren und den Zugang nur dieser Lizenz beenden.";
 var LEDGER_MISSING_TEXT = "Best\xE4tigen gesperrt, Zahlungsbuch fehlt (Backfill)";
+var UNMATCHED_TEXT = "Keinem Vertrag zugeordnet, Best\xE4tigen gesperrt: erst zuordnen <id> --pass=<user_pass_id>";
+var SOURCE_LABELS = {
+  account_form: "K\xFCndigungsformular im Konto",
+  cancellation_button: "K\xFCndigungsbutton (\xF6ffentlich, \xA7 312k/\xA7 356a BGB)"
+};
+function sourceLabel(source) {
+  if (!source) return SOURCE_LABELS.account_form;
+  return SOURCE_LABELS[source] ?? source;
+}
 var BASE_PATH = "/cancellation-requests";
 async function listCancellationRequests(client, options = {}) {
   return client.get(BASE_PATH, {
     status: options.status,
     page: options.page,
-    per_page: options.perPage
+    per_page: options.perPage,
+    unmatched: options.onlyUnmatched ? 1 : void 0
   });
 }
 async function getCancellationRequest(client, id) {
@@ -5919,6 +5932,13 @@ async function rejectCancellationRequest(client, id, rejectionReason, rejectionG
   return client.post(
     `${BASE_PATH}/${id}/rejection`,
     { rejection_ground: rejectionGround, rejection_reason: rejectionReason },
+    { idempotencyKey: options.idempotencyKey }
+  );
+}
+async function assignCancellationRequest(client, id, userPassId, options = {}) {
+  return client.post(
+    `${BASE_PATH}/${id}/assignment`,
+    { user_pass_id: userPassId },
     { idempotencyKey: options.idempotencyKey }
   );
 }
@@ -5975,7 +5995,9 @@ var SHORT_WARNING_LABELS = {
   [WARNING.refundOutstanding]: "erstattung-offen",
   [WARNING.subscriptionCancellationFailed]: "ABO-KUENDIGUNG-FEHLGESCHLAGEN",
   [WARNING.refundFailed]: "ERSTATTUNG-FEHLGESCHLAGEN",
-  [WARNING.withdrawalPossible]: "widerruf-moeglich"
+  [WARNING.withdrawalPossible]: "widerruf-moeglich",
+  [WARNING.unmatched]: "NICHT-ZUGEORDNET",
+  [WARNING.effectiveDateUnknown]: "datum-offen"
 };
 function shortWarningLabel(code) {
   return SHORT_WARNING_LABELS[code] ?? code;
@@ -6218,6 +6240,18 @@ function buildConfirmationPreview(detail, options = {}) {
       ]
     };
   }
+  if (hasWarning(detail.warnings, WARNING.unmatched)) {
+    return {
+      changesState: false,
+      lines: [
+        {
+          kind: "blocked",
+          text: `${label}: ${UNMATCHED_TEXT}. Ein Aufruf mit --force wird mit 409 unmatched abgelehnt. Kandidaten zeigt show ${detail.id}; gibt es keinen Vertrag, reject --unzulaessig=falscher-vertrag.`
+        },
+        ...warningLines(detail.warnings, [WARNING.unmatched])
+      ]
+    };
+  }
   if (!detail.pass) {
     return {
       changesState: false,
@@ -6357,6 +6391,61 @@ function buildRejectionPreview(detail, rejectionReason, ground) {
       EXECUTE_HINT
     ]
   };
+}
+function passText(pass) {
+  const holder = pass.is_b2b ? pass.company_name : pass.holder_email ?? pass.holder_name;
+  return `Pass #${pass.user_pass_id} ${pass.name}${holder ? ` (${holder})` : ""}`;
+}
+function buildAssignmentPreview(detail, userPassId) {
+  const label = `K\xFCndigung #${detail.id}`;
+  if (detail.status !== "pending") {
+    return {
+      changesState: false,
+      lines: [
+        { kind: "blocked", text: `${label} ist ${detail.status_label.toLowerCase()} (${detail.status}), zuordnen geht nur bei offenen Anfragen.` },
+        { kind: "note", text: "Ein Aufruf mit --force wird vom Server mit 409 (Konflikt) abgelehnt." }
+      ]
+    };
+  }
+  if (detail.pass?.user_pass_id === userPassId) {
+    return {
+      changesState: false,
+      lines: [
+        { kind: "note", text: `${label} ist bereits ${passText(detail.pass)} zugeordnet. Ein Aufruf mit --force \xE4ndert nichts (already_assigned).` }
+      ]
+    };
+  }
+  const candidates = detail.assignment?.candidates ?? [];
+  const candidate = candidates.find((pass) => pass.user_pass_id === userPassId);
+  const lines = [
+    { kind: "action", text: `${label} wird ${candidate ? passText(candidate) : `Pass #${userPassId}`} zugeordnet.` },
+    {
+      kind: "note",
+      text: `Das Wirksamkeitsdatum rechnet der Server ab Eingang (${formatGermanDateTime(detail.received_at)}); das Konto wird Vertragspartner des Passes (bei Firmenlizenzen die Firma).`
+    },
+    { kind: "note", text: `Keine Mail, kein Stripe-Aufruf. Danach wie gewohnt: confirm ${detail.id}.` }
+  ];
+  if (detail.pass) {
+    lines.push({ kind: "warning", text: `Ersetzt die bisherige Zuordnung zu ${passText(detail.pass)}.` });
+  }
+  if (!candidate) {
+    lines.push({
+      kind: "warning",
+      text: candidates.length > 0 ? `Pass #${userPassId} ist keiner der Kandidaten des gefundenen Kontos (${candidates.map((pass) => `#${pass.user_pass_id}`).join(", ")}). Bitte pr\xFCfen, ob die Erkl\xE4rung wirklich diesen Vertrag meint.` : `Zum Absender wurde kein Konto mit laufenden Vertr\xE4gen gefunden. Bitte pr\xFCfen, ob die Erkl\xE4rung wirklich Pass #${userPassId} meint (Name, E-Mail, Angabe zum Vertrag).`
+    });
+  }
+  lines.push(...warningLines(detail.warnings, [WARNING.unmatched]), EXECUTE_HINT);
+  return { changesState: true, lines };
+}
+function buildAssignmentResultLines(response) {
+  const detail = response.data;
+  const lines = [
+    response.meta.result === "assigned" ? { kind: "action", text: `K\xFCndigung #${detail.id} zugeordnet${detail.pass ? `: ${passText(detail.pass)}` : ""}.` } : { kind: "note", text: `K\xFCndigung #${detail.id} war bereits diesem Pass zugeordnet, nichts ge\xE4ndert.` },
+    { kind: "note", text: `Wirksam zum (berechnet ab Eingang): ${formatGermanDate(detail.effective_date.stored)}` },
+    { kind: "hint", text: `N\xE4chster Schritt: lernplattform kuendigungen confirm ${detail.id} --env=\u2026 (Vorschau).` }
+  ];
+  lines.splice(2, 0, ...warningLines(detail.warnings));
+  return lines;
 }
 var REAL_MONEY_TEXT = "ECHTES GELD: refund --force zahlt \xFCber Stripe an den Teilnehmer aus. Nicht umkehrbar.";
 function refundAmountLines(detail, refund2) {
@@ -6574,6 +6663,8 @@ var ERROR_CODE_HINTS = {
   paid_amount_unknown: `${LEDGER_MISSING_TEXT}: auf dem Server php artisan pass:backfill-payments, dann erneut.`,
   not_confirmed: "Erst best\xE4tigen (confirm <id>), dann erstatten.",
   refund_in_progress: "Es l\xE4uft bereits eine Erstattung. Nach 10 Minuten erneut versuchen und vorher mit show <id> den Stand pr\xFCfen.",
+  unmatched: "Die Erkl\xE4rung kam \xFCber den K\xFCndigungsbutton und ist keinem Vertrag zugeordnet. Kandidaten mit show <id>, dann zuordnen <id> --pass=<user_pass_id> --force. Ohne Vertrag: reject --unzulaessig=falscher-vertrag.",
+  duplicate: "F\xFCr diesen Pass liegt schon eine offene K\xFCndigung vor. Diese Erkl\xE4rung ist dann ein Duplikat: reject <id> --unzulaessig=duplikat.",
   user_pass_missing: "Der Pass ist gel\xF6scht: Best\xE4tigen und Erstatten lassen sich nicht berechnen. Pass wiederherstellen oder die Erkl\xE4rung als unzul\xE4ssig ablehnen (reject --unzulaessig=falscher-vertrag), Geld manuell in Stripe kl\xE4ren.",
   refund_failed: "Stripe hat die Erstattung abgelehnt. Bereits erstattete Anteile sind gebucht; Ursache in Stripe pr\xFCfen, dann refund <id> --force erneut (zahlt nicht doppelt)."
 };
@@ -6681,7 +6772,7 @@ function renderCancellationList(response, c) {
     received: formatGermanDate(item.received_at),
     age: `${item.age_days} T`,
     name: item.participant_name,
-    pass: orDash(item.pass_name),
+    pass: item.unmatched ? c.red(c.bold("nicht zugeordnet")) : orDash(item.pass_name),
     type: listTypeText(item, c),
     effective: formatGermanDate(item.effective_date),
     payment: paymentModeLabel(item.payment_mode),
@@ -6695,9 +6786,12 @@ function renderCancellationList(response, c) {
   const ledgerMissing = data.filter((item) => hasWarning(item.warnings, WARNING.paidAmountUnknown)).map((item) => `#${item.id}`);
   const ledgerNote = ledgerMissing.length > 0 ? `
 ${c.red(c.bold(`${LEDGER_MISSING_TEXT}: ${ledgerMissing.join(", ")}`))}` : "";
+  const unmatched = data.filter((item) => item.unmatched).map((item) => `#${item.id}`);
+  const unmatchedNote = unmatched.length > 0 ? `
+${c.red(c.bold(`${UNMATCHED_TEXT}: ${unmatched.join(", ")}`))}` : "";
   return `${renderTable(rows, columns, c)}
 
-${footer}${ledgerNote}`;
+${footer}${ledgerNote}${unmatchedNote}`;
 }
 function warningsSection(warnings, c) {
   if (warnings.length === 0) return section("Warnungen", c.dim("  keine"), c);
@@ -6719,6 +6813,7 @@ function effectiveDateSection(detail, c) {
     detail.effective_date.recalculated_ends_regularly ? "endet regul\xE4r zum Vertragsende" : ""
   ].filter(Boolean);
   if (flags.length > 0) pairs.push(["Hinweis", flags.join(", ")]);
+  if (detail.effective_date.requested) pairs.push(["Wunschtermin", formatGermanDate(detail.effective_date.requested)]);
   if (explanation) pairs.push(["Berechnung", explanation]);
   if (error) pairs.push(["Fehler", c.red(error)]);
   return section("Wirksamkeitsdatum", keyValues(pairs, c), c);
@@ -6789,8 +6884,26 @@ function subscriptionCancellationSection(detail, c) {
   }
   return section("Abo-K\xFCndigung (Best\xE4tigung)", keyValues(pairs, c), c);
 }
+function unmatchedPassBody(detail, c) {
+  const candidates = detail.assignment?.candidates ?? [];
+  const head = c.red(c.bold("  nicht zugeordnet (unmatched)"));
+  if (candidates.length === 0) {
+    return `${head}
+${c.dim("  kein Konto mit laufenden Vertr\xE4gen zum Absender gefunden")}`;
+  }
+  const lines = candidates.map((pass) => {
+    const holder = pass.is_b2b ? `Firma ${orDash(pass.company_name)}, ${orDash(pass.holder_email)}` : orDash(pass.holder_email);
+    return `  --pass=${pass.user_pass_id}  ${pass.name} \xB7 gekauft ${formatGermanDate(pass.purchased_at)} \xB7 ${holder}`;
+  });
+  return `${head}
+${c.dim(`  Kandidaten (Konto #${detail.assignment?.account_user_id ?? DASH}):`)}
+${lines.join("\n")}`;
+}
 function blockerBanner(detail, c) {
   const banners = [];
+  if (hasWarning(detail.warnings, WARNING.unmatched)) {
+    banners.push(`! ${UNMATCHED_TEXT}. Ohne Vertrag: reject ${detail.id} --unzulaessig=falscher-vertrag.`);
+  }
   if (hasWarning(detail.warnings, WARNING.paidAmountUnknown)) {
     banners.push(`! ${LEDGER_MISSING_TEXT}: Zahlungen auf dem Server nachladen (php artisan pass:backfill-payments). Erstatten ist ebenfalls gesperrt.`);
   }
@@ -6820,6 +6933,7 @@ function renderCancellationDetail(detail, c) {
   }
   requestPairs.push(
     ["Eingang", `${formatGermanDateTime(detail.received_at)} (vor ${detail.age_days} Tagen)`],
+    ["Quelle", sourceLabel(detail.source)],
     ["Grund", orDash(detail.reason)],
     ["Zahlungsart", paymentModeLabel(detail.payment_mode)]
   );
@@ -6831,7 +6945,9 @@ function renderCancellationDetail(detail, c) {
         ["Name", participant.name],
         ["E-Mail", participant.email],
         ["Adresse", orDash(participant.address_formatted)],
-        ["User-ID", participant.user_id]
+        ["User-ID", participant.user_id ?? "kein Konto gefunden"],
+        ...participant.company_name ? [["Firma (Angabe)", participant.company_name]] : [],
+        ...participant.contract_reference ? [["Vertrag (Angabe)", participant.contract_reference]] : []
       ],
       c
     ),
@@ -6852,7 +6968,7 @@ function renderCancellationDetail(detail, c) {
       c
     ),
     c
-  ) : section("Pass", c.red("  gel\xF6scht oder nicht mehr verkn\xFCpft (user_pass_missing)"), c);
+  ) : detail.assignment?.unmatched ? section("Pass", unmatchedPassBody(detail, c), c) : section("Pass", c.red("  gel\xF6scht oder nicht mehr verkn\xFCpft (user_pass_missing)"), c);
   const subscriptionSection = subscription ? section(
     "Abo (Stripe)",
     keyValues(
@@ -6915,13 +7031,14 @@ var MAX_PER_PAGE = 100;
 var MAX_TEXT_LENGTH = 2e3;
 var COMMON_FLAGS = ["env", "json", "help"];
 var ALLOWED_FLAGS = {
-  list: [...COMMON_FLAGS, "status", "page", "per-page"],
+  list: [...COMMON_FLAGS, "status", "page", "per-page", "nicht-zugeordnet"],
   show: [...COMMON_FLAGS],
   confirm: [...COMMON_FLAGS, "notiz", "notiz-stdin", "notiz-base64", "wichtiger-grund-anerkannt", "als-widerruf", "force"],
   reject: [...COMMON_FLAGS, "unzulaessig", "grund", "grund-stdin", "grund-base64", "force"],
-  refund: [...COMMON_FLAGS, "force"]
+  refund: [...COMMON_FLAGS, "force"],
+  zuordnen: [...COMMON_FLAGS, "pass", "force"]
 };
-var WRITE_OPERATIONS = ["confirm", "reject", "refund"];
+var WRITE_OPERATIONS = ["confirm", "reject", "refund", "zuordnen"];
 var IMPORTANT_REASON_FLAG = "wichtiger-grund-anerkannt";
 var TREAT_AS_WITHDRAWAL_FLAG = "als-widerruf";
 function assertKnownFlags(operation, args) {
@@ -6994,7 +7111,8 @@ async function list(client, args, io) {
   const response = await listCancellationRequests(client, {
     status: parseStatus(args.flags.status),
     page: parsePositiveInt(args.flags.page, "page"),
-    perPage: parsePositiveInt(args.flags["per-page"], "per-page", MAX_PER_PAGE)
+    perPage: parsePositiveInt(args.flags["per-page"], "per-page", MAX_PER_PAGE),
+    onlyUnmatched: switchFlag(args, "nicht-zugeordnet")
   });
   io.out(isJson(args) ? JSON.stringify(response, null, 2) : renderCancellationList(response, io.palette));
 }
@@ -7058,6 +7176,29 @@ async function refund(client, args, io, target) {
   const response = await refundCancellationRequest(client, id);
   writeResult(io, args, response, buildRefundResultLines(response));
 }
+function parsePassId(args) {
+  const value = args.flags.pass;
+  if (value === void 0 || value === true) {
+    throw new AdminUsageError("--pass=<user_pass_id> ist Pflicht. Kandidaten zeigt: lernplattform kuendigungen show <id>");
+  }
+  const passId = parsePositiveInt(value, "pass");
+  if (passId === void 0) {
+    throw new AdminUsageError("--pass=<user_pass_id> ist Pflicht.");
+  }
+  return passId;
+}
+async function zuordnen(client, args, io, target) {
+  const id = parseId(args);
+  const userPassId = parsePassId(args);
+  if (!isForce(args)) {
+    const { data: detail } = await getCancellationRequest(client, id);
+    const preview = buildAssignmentPreview(detail, userPassId);
+    writePreview(io, args, target, preview.changesState, preview.lines, detail);
+    return;
+  }
+  const response = await assignCancellationRequest(client, id, userPassId);
+  writeResult(io, args, response, buildAssignmentResultLines(response));
+}
 function writePreview(io, args, target, changesState, lines, detail) {
   if (isJson(args)) {
     io.out(JSON.stringify({ mode: "preview", changes_state: changesState, lines, data: detail }, null, 2));
@@ -7096,7 +7237,8 @@ var OPERATIONS = {
   show,
   confirm,
   reject,
-  refund
+  refund,
+  zuordnen
 };
 async function executeKuendigungen(argv, io) {
   const operation = argv[0];
@@ -7150,12 +7292,13 @@ var HELP_TEXT = `lernplattform kuendigungen - K\xFCndigungsanfragen \xFCber die 
 USAGE
   lernplattform kuendigungen <aktion> [id] [--flag=wert]
 
-ABLAUF: pr\xFCfen \u2192 confirm \u2192 refund
+ABLAUF: pr\xFCfen \u2192 (zuordnen) \u2192 confirm \u2192 refund
   1) list / show            lesen, Warnungen und Berechnung pr\xFCfen (frei)
+     zuordnen <id>          nur bei NICHT-ZUGEORDNET: Erkl\xE4rung vom K\xFCndigungsbutton einem Pass zuordnen
   2) confirm <id>           K\xFCndigung best\xE4tigen: Wirksamkeit, Zugangsende, Stripe-Abo, Mail.
                             L\xF6st KEINE Erstattung aus.
   3) refund <id>            Erstattung \xFCber Stripe auszahlen. ECHTES GELD.
-  confirm, reject und refund sind VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau.
+  confirm, reject, refund und zuordnen sind VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau.
   Sie brauchen immer ein ausdr\xFCckliches Ziel (--env=production|staging oder $LERNPLATTFORM_ENV),
   sonst brechen sie ab, auch die Vorschau.
 
@@ -7170,6 +7313,9 @@ AKTIONEN
                        abgelehnt. VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau
   refund <id>          Berechnete Erstattung \xFCber Stripe auszahlen. VER\xC4NDERND, ECHTES GELD, nur nach
                        ausdr\xFCcklicher Ansage. Ohne --force nur Vorschau
+  zuordnen <id>        Erkl\xE4rung vom K\xFCndigungsbutton (\xA7 312k/\xA7 356a BGB), die keinem Vertrag zugeordnet
+                       ist, einem Pass zuordnen. Der Server rechnet das Wirksamkeitsdatum ab Eingang.
+                       Keine Mail, kein Stripe. VER\xC4NDERND, nur nach Ansage. Ohne --force nur Vorschau
 
 FLAGS
   --env=production|staging   Zielumgebung. Lesend (list, show): Default $LERNPLATTFORM_ENV, sonst
@@ -7180,6 +7326,7 @@ FLAGS
     --status=S               pending (Default) | confirmed | rejected | withdrawn | all
     --page=N                 Seite (ab 1)
     --per-page=N             Eintr\xE4ge pro Seite (Server-Default 25, max ${MAX_PER_PAGE})
+    --nicht-zugeordnet       Nur Erkl\xE4rungen ohne zugeordneten Vertrag (K\xFCndigungsbutton, unmatched)
   confirm:
     --wichtiger-grund-anerkannt  Nur au\xDFerordentliche K\xFCndigung: wichtiger Grund anerkannt (\xA7 314 BGB),
                              sofortige Wirkung. Ohne das Flag gilt sie als ordentliche K\xFCndigung zum
@@ -7200,6 +7347,9 @@ FLAGS
                              withdrawal_not_available gehen auch)
     --grund="\u2026"              Pflicht. Begr\xFCndung, geht per Mail an den Teilnehmer (max ${MAX_TEXT_LENGTH} Zeichen)
     --force                  Wirklich ausf\xFChren
+  zuordnen:
+    --pass=N                 Pflicht. UserPass-ID; Kandidaten des gefundenen Kontos zeigt show <id>
+    --force                  Wirklich zuordnen
   refund:
     --force                  Wirklich auszahlen (Stripe-Refund). Kein Betrag w\xE4hlbar: immer die berechnete
                              Erstattung minus bereits erstattet
@@ -7215,7 +7365,9 @@ WAS DIE BEFEHLE MIT --force AUSL\xD6SEN
                      endet zum selben Zeitpunkt (subscription_cancellation.bundle_user_pass_ids).
                      Firmen-Abo mit mehreren Lizenzen: kein B\xFCndel, Lizenzen werden einzeln gek\xFCndigt.
                      Gesperrt (409) bei paid_amount_unknown, bundle_subscription_ambiguous,
-                     company_multi_seat_subscription, user_pass_missing.
+                     company_multi_seat_subscription, user_pass_missing, unmatched.
+  zuordnen --force \u2192 Pass wird zugeordnet, Wirksamkeitsdatum ab Eingang neu berechnet, Konto = Vertragspartner.
+                     Keine Mail, kein Stripe. Danach confirm wie gewohnt.
   reject --force   \u2192 Status "rejected" mit rejection_ground, Ablehnungsmail mit --grund an den Teilnehmer.
   refund --force   \u2192 Stripe-Refund(s) \xFCber die Zahlungen des Vertrags, neueste zuerst, auf das beim Kauf
                      genutzte Zahlungsmittel. Echtes Geld, nicht umkehrbar. Nur f\xFCr best\xE4tigte Anfragen
@@ -7231,10 +7383,13 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
             409 conflict (anderer Status) | paid_amount_unknown (Zahlungsbuch fehlt, Backfill n\xF6tig)
                 | bundle_subscription_ambiguous (Abo bezahlt P\xE4sse eines anderen Kaufs)
                 | company_multi_seat_subscription (Firmen-Abo mit mehreren Lizenzen, AIDI-776)
-                | user_pass_missing (Pass gel\xF6scht)
+                | user_pass_missing (Pass gel\xF6scht) | unmatched (erst zuordnen)
             422 unprocessable (Flag passt nicht zur Anfrage, z. B. Widerruf bei Firmenpass)
   reject    200 rejected | already_rejected       409 conflict
             422 unprocessable (--unzulaessig passt nicht, z. B. widerruf-ausgeschlossen bei K\xFCndigung)
+  zuordnen  200 assigned | already_assigned
+            409 conflict (nicht mehr offen) | duplicate (Pass hat schon eine offene K\xFCndigung)
+            422 unprocessable (Pass kostenlos) / Validierungsfehler (Pass existiert nicht)
   refund    200 refunded | already_refunded | nothing_to_refund
             409 not_confirmed | paid_amount_unknown | refund_in_progress | user_pass_missing
             422 unprocessable (keine Erstattung berechenbar)
@@ -7242,6 +7397,11 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
                 m\xF6glich, bereits erstattete Anteile werden nicht doppelt gezahlt)
 
 WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; VERSALIEN = kritisch)
+  NICHT-ZUGEORDNET         unmatched: \xFCber den K\xFCndigungsbutton eingegangen, kein eindeutiger Vertrag.
+                           Wirkt trotzdem ab Eingang. Best\xE4tigen gesperrt: show <id> (Kandidaten), dann
+                           zuordnen <id> --pass=N; ohne Vertrag reject --unzulaessig=falscher-vertrag
+  datum-offen              effective_date_unknown: zugeordnet, aber f\xFCr diese Art kein Datum berechenbar
+                           (z. B. ordentlich bei 3-Monats-Pass). Art kl\xE4ren
   ZAHLUNGSBUCH-FEHLT       paid_amount_unknown: Best\xE4tigen gesperrt, Zahlungsbuch fehlt (Backfill:
                            php artisan pass:backfill-payments). Erstatten ebenso
   ABO-BUENDEL-UNKLAR       bundle_subscription_ambiguous: Abo bezahlt P\xE4sse eines anderen Kaufs,
@@ -7302,6 +7462,8 @@ IO-KONVENTIONEN
 BEISPIELE
   lernplattform kuendigungen list
   lernplattform kuendigungen list --status=confirmed          # u. a. offene Erstattungen
+  lernplattform kuendigungen list --nicht-zugeordnet          # K\xFCndigungsbutton ohne Vertrag
+  lernplattform kuendigungen zuordnen 31 --pass=1954 --env=production   # Vorschau
   lernplattform kuendigungen show 12
   lernplattform kuendigungen show 12 --json | jq '.data.refund_execution'
   lernplattform kuendigungen confirm 12 --env=production                  # Vorschau (Umdeutung bei au\xDFerordentlich)

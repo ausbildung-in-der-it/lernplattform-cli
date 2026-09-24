@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { EXIT_API, EXIT_OK, EXIT_USAGE, executeKuendigungen } from '../../src/commands/kuendigungen';
 import { createPalette } from '../../src/admin/cancellation-format';
-import { cancellationDetail, confirmedDetail, executionWith, refundWith, restoreFetch, stubFetch } from './fixtures';
+import { cancellationDetail, confirmedDetail, executionWith, refundWith, restoreFetch, stubFetch, unmatchedDetail } from './fixtures';
 
 const ENV = { LERNPLATTFORM_BASE_URL: 'http://127.0.0.1:8124', LERNPLATTFORM_ADMIN_TOKEN: 'secret-token', LERNPLATTFORM_ENV: 'production' };
 
@@ -535,5 +535,109 @@ describe('lernplattform kuendigungen', () => {
 
     assert.equal(result.exitCode, EXIT_API);
     assert.equal(lastStderrJson(result.stderr.slice(result.stderr.indexOf('\n{') + 1)).code, 'unprocessable');
+  });
+
+  it('list --nicht-zugeordnet asks only for unmatched declarations and marks them', async () => {
+    const calls = stubFetch(() => ({
+      status: 200,
+      body: {
+        data: [
+          {
+            id: 31, type: 'ordentlich', type_label: 'Ordentliche Kündigung', status: 'pending', status_label: 'Ausstehend',
+            received_at: '2026-09-24T10:00:00+02:00', age_days: 0, effective_date: null,
+            participant_name: 'Mia Muster', participant_email: 'mia@example.com', pass_name: null,
+            payment_mode: null, refund_status: 'none', source: 'cancellation_button', unmatched: true,
+            contract_reference: 'Rechnung RE-7', company_name: null,
+            warnings: [{ code: 'unmatched', message: '…' }],
+          },
+        ],
+        meta: { current_page: 1, last_page: 1, per_page: 25, total: 1, status: 'pending', unmatched: true },
+      },
+    }));
+
+    const result = await execute(['list', '--nicht-zugeordnet']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.equal(new URL(calls[0].url).search, '?status=pending&unmatched=1');
+    assert.match(result.stdout, /#31 .*nicht zugeordnet/);
+    assert.match(result.stdout, /NICHT-ZUGEORDNET/);
+    assert.match(result.stdout, /Keinem Vertrag zugeordnet, Bestätigen gesperrt: erst zuordnen <id> --pass=<user_pass_id>: #31/);
+  });
+
+  it('show lists source, the contract reference of the sender and the candidates for zuordnen', async () => {
+    stubFetch(() => ({ status: 200, body: { data: unmatchedDetail() } }));
+
+    const result = await execute(['show', '31']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.match(result.stdout, /Quelle\s+Kündigungsbutton \(öffentlich/);
+    assert.match(result.stdout, /Vertrag \(Angabe\)\s+Rechnung RE-7/);
+    assert.match(result.stdout, /nicht zugeordnet \(unmatched\)/);
+    assert.match(result.stdout, /--pass=1954 {2}AP1 – 12 Monate/);
+    assert.match(result.stdout, /--pass=1955 {2}AP2 – 12 Monate/);
+  });
+
+  it('confirm on an unmatched declaration previews the 409 instead of a confirmation', async () => {
+    stubFetch(() => ({ status: 200, body: { data: unmatchedDetail() } }));
+
+    const result = await execute(['confirm', '31', '--json']);
+
+    const preview = JSON.parse(result.stdout);
+    assert.equal(preview.changes_state, false);
+    assert.match(preview.lines[0].text, /409 unmatched/);
+  });
+
+  it('zuordnen without --force previews the assignment of a candidate', async () => {
+    const calls = stubFetch(() => ({ status: 200, body: { data: unmatchedDetail() } }));
+
+    const result = await execute(['zuordnen', '31', '--pass=1954']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.deepEqual(calls.map((call) => call.method), ['GET']);
+    assert.match(result.stdout, /Kündigung #31 wird Pass #1954 AP1 – 12 Monate \(mia@example\.com\) zugeordnet\./);
+    assert.match(result.stdout, /Keine Mail, kein Stripe-Aufruf/);
+    assert.doesNotMatch(result.stdout, /keiner der Kandidaten/);
+  });
+
+  it('zuordnen warns when the pass is not one of the candidates', async () => {
+    stubFetch(() => ({ status: 200, body: { data: unmatchedDetail() } }));
+
+    const result = await execute(['zuordnen', '31', '--pass=777']);
+
+    assert.match(result.stdout, /Pass #777 ist keiner der Kandidaten des gefundenen Kontos \(#1954, #1955\)/);
+  });
+
+  it('zuordnen --force posts user_pass_id to the assignment endpoint and prints the effective date', async () => {
+    const assigned = cancellationDetail({ id: 31, warnings: [], effective_date: { ...cancellationDetail().effective_date, stored: '2026-12-24' } });
+    const calls = stubFetch(() => ({ status: 200, body: { data: assigned, meta: { result: 'assigned' } } }));
+
+    const result = await execute(['zuordnen', '31', '--pass=7', '--force']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.equal(calls[0].method, 'POST');
+    assert.equal(calls[0].url, 'http://127.0.0.1:8124/api/admin/v1/cancellation-requests/31/assignment');
+    assert.deepEqual(JSON.parse(calls[0].body ?? ''), { user_pass_id: 7 });
+    assert.match(result.stdout, /Kündigung #31 zugeordnet: Pass #7 IT-Pass 12 Monate/);
+    assert.match(result.stdout, /Wirksam zum \(berechnet ab Eingang\): 24\.12\.2026/);
+  });
+
+  it('zuordnen needs --pass and an explicit environment', async () => {
+    const missingPass = await execute(['zuordnen', '31']);
+    assert.equal(missingPass.exitCode, EXIT_USAGE);
+    assert.match(missingPass.stderr, /--pass=<user_pass_id> ist Pflicht/);
+
+    const noEnv = await execute(['zuordnen', '31', '--pass=7'], { LERNPLATTFORM_BASE_URL: 'http://127.0.0.1:8124', LERNPLATTFORM_ADMIN_TOKEN: 'secret-token' });
+    assert.equal(noEnv.exitCode, EXIT_USAGE);
+  });
+
+  it('zuordnen --force maps 409 duplicate to exit 2 with a hint', async () => {
+    stubFetch(() => ({ status: 409, body: { error: 'duplicate', message: 'Es liegt bereits eine offene Kündigungsanfrage für diesen Pass vor.' } }));
+
+    const result = await execute(['zuordnen', '31', '--pass=7', '--force']);
+
+    assert.equal(result.exitCode, EXIT_API);
+    const payload = lastStderrJson(result.stderr.slice(result.stderr.indexOf('\n{') + 1));
+    assert.equal(payload.code, 'duplicate');
+    assert.match(String(payload.hint), /--unzulaessig=duplikat/);
   });
 });
