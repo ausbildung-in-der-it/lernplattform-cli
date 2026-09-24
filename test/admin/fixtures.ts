@@ -138,6 +138,27 @@ export function unmatchedDetail(overrides: Partial<CancellationRequestDetail> = 
   });
 }
 
+/** Widerruf nach 14 Tagen, innerhalb von 12 Monaten und 14 Tagen: wartet auf die Entscheidung (AIDI-772). */
+export function lateWithdrawalDetail(overrides: Partial<CancellationRequestDetail> = {}): CancellationRequestDetail {
+  return cancellationDetail({
+    id: 41,
+    type: 'widerruf',
+    type_label: 'Widerruf',
+    received_at: '2026-09-24T10:00:00+02:00',
+    withdrawal_refund_due_at: null,
+    effective_date: {
+      stored: null,
+      recalculated: '2026-12-01',
+      recalculation_explanation: 'Erklärung als ordentliche Kündigung zum nächstmöglichen Termin behandelt (§ 140 BGB).',
+      recalculation_error: null,
+      recalculated_ends_regularly: false,
+      recalculated_reinterpreted_as_ordinary: true,
+    },
+    warnings: [{ code: 'withdrawal_period_extended_possible', message: 'Widerruf nach Ablauf der regulären Frist.' }],
+    ...overrides,
+  });
+}
+
 /** Refund-Block mit überschriebenen Feldern (Fixture-Default ist nicht null). */
 export function refundWith(overrides: Partial<NonNullable<CancellationRequestDetail['refund']>>): NonNullable<CancellationRequestDetail['refund']> {
   return { ...(cancellationDetail().refund as NonNullable<CancellationRequestDetail['refund']>), ...overrides };

@@ -74,7 +74,17 @@ export const WARNING = {
   withdrawalPossible: 'withdrawal_possible',
   unmatched: 'unmatched',
   effectiveDateUnknown: 'effective_date_unknown',
+  businessCustomer: 'business_customer',
+  withdrawalPeriodExtendedPossible: 'withdrawal_period_extended_possible',
+  withdrawalPeriodExpired: 'withdrawal_period_expired',
 } as const;
+
+/** Widerrufe, die nicht einfach bestätigt werden: Admin entscheidet (AIDI-772). */
+export const WITHDRAWAL_DECISION_WARNINGS: readonly string[] = [
+  WARNING.businessCustomer,
+  WARNING.withdrawalPeriodExtendedPossible,
+  WARNING.withdrawalPeriodExpired,
+];
 
 /** Bestätigt, Abo vorhanden, aber ohne Enddatum: Stripe cancel_at ist vermutlich fehlgeschlagen. */
 export const STRIPE_CANCEL_MISSING_WARNING = WARNING.subscriptionCancelAtMissing;
@@ -89,6 +99,9 @@ export const CRITICAL_WARNINGS: readonly string[] = [
   WARNING.bundleSubscriptionAmbiguous,
   WARNING.companyMultiSeatSubscription,
   WARNING.unmatched,
+  WARNING.businessCustomer,
+  WARNING.withdrawalPeriodExtendedPossible,
+  WARNING.withdrawalPeriodExpired,
 ];
 
 /** Übergangssperre bis AIDI-776: Firmen kündigen Lizenzen einzeln, das ist noch nicht automatisiert. */
@@ -333,12 +346,21 @@ export async function getCancellationRequest(client: AdminApiClient, id: number)
 export async function confirmCancellationRequest(
   client: AdminApiClient,
   id: number,
-  options: { adminNotes?: string; importantReasonAccepted?: boolean; treatAsWithdrawal?: boolean; idempotencyKey?: string } = {}
+  options: {
+    adminNotes?: string;
+    importantReasonAccepted?: boolean;
+    treatAsWithdrawal?: boolean;
+    acceptLateWithdrawal?: boolean;
+    treatAsCancellation?: boolean;
+    idempotencyKey?: string;
+  } = {}
 ): Promise<CancellationActionResponse> {
   const body: Record<string, unknown> = {};
   if (options.adminNotes) body.admin_notes = options.adminNotes;
   if (options.importantReasonAccepted) body.important_reason_accepted = true;
   if (options.treatAsWithdrawal) body.treat_as_withdrawal = true;
+  if (options.acceptLateWithdrawal) body.accept_late_withdrawal = true;
+  if (options.treatAsCancellation) body.treat_as_cancellation = true;
 
   return client.post<CancellationActionResponse>(`${BASE_PATH}/${id}/confirmation`, body, {
     idempotencyKey: options.idempotencyKey,
@@ -456,6 +478,9 @@ export const SHORT_WARNING_LABELS: Record<string, string> = {
   [WARNING.withdrawalPossible]: 'widerruf-moeglich',
   [WARNING.unmatched]: 'NICHT-ZUGEORDNET',
   [WARNING.effectiveDateUnknown]: 'datum-offen',
+  [WARNING.businessCustomer]: 'FIRMENKUNDE-WIDERRUF',
+  [WARNING.withdrawalPeriodExtendedPossible]: 'WIDERRUF-VERSPAETET',
+  [WARNING.withdrawalPeriodExpired]: 'WIDERRUF-FRIST-ABGELAUFEN',
 };
 
 export function shortWarningLabel(code: string): string {
@@ -574,13 +599,38 @@ interface EffectiveOutcome {
  * Widerruf und anerkannter wichtiger Grund wirken sofort mit Zugang der Erklärung,
  * alles andere zum neu berechneten Termin (bei außerordentlich ohne Grund umgedeutet).
  */
-function effectiveOutcome(
-  detail: CancellationRequestDetail,
-  decision: { importantReasonAccepted: boolean; treatAsWithdrawal: boolean }
-): EffectiveOutcome {
+function effectiveOutcome(detail: CancellationRequestDetail, decision: ConfirmationDecision): EffectiveOutcome {
   const received = formatGermanDate(detail.received_at);
   const { recalculated, stored } = detail.effective_date;
   const { importantReasonAccepted } = decision;
+
+  if (decision.treatAsCancellation) {
+    const regular = detail.effective_date.recalculated_ends_regularly ? ', das ist das reguläre Vertragsende' : '';
+    return {
+      date: recalculated,
+      immediate: false,
+      lines: [
+        {
+          kind: 'action',
+          text: `Widerruf wird als ordentliche Kündigung behandelt (§ 140 BGB): wirksam zum ${formatGermanDate(recalculated)}${regular}. Die Mail erklärt, warum (Firmenlizenz bzw. Frist abgelaufen).`,
+        },
+      ],
+    };
+  }
+
+  if (decision.acceptLateWithdrawal) {
+    const fullAmount = detail.refund ? `volle Erstattung ${detail.refund.paid_amount_formatted}` : 'volle Erstattung des gezahlten Betrags';
+    return {
+      date: detail.received_at,
+      immediate: true,
+      lines: [
+        {
+          kind: 'action',
+          text: `Verspäteter Widerruf wird anerkannt (§ 356 Abs. 3 BGB, Belehrung möglicherweise mangelhaft): ${fullAmount}, Vertrag endet mit Zugang am ${received}, Zugang und Abo mit der Bestätigung.`,
+        },
+      ],
+    };
+  }
 
   if (decision.treatAsWithdrawal) {
     const fullAmount = detail.refund ? `volle Erstattung ${detail.refund.paid_amount_formatted}` : 'volle Erstattung des gezahlten Betrags';
@@ -705,10 +755,7 @@ function subscriptionLine(detail: CancellationRequestDetail, outcome: EffectiveO
   return { kind: 'action', text: `Stripe-Abo-Ende: ${id} wird zum ${formatGermanDate(outcome.date)} gekündigt (cancel_at${bundle}).` };
 }
 
-function confirmRefundLine(
-  detail: CancellationRequestDetail,
-  decision: { importantReasonAccepted: boolean; treatAsWithdrawal: boolean }
-): PreviewLine {
+function confirmRefundLine(detail: CancellationRequestDetail, decision: ConfirmationDecision): PreviewLine {
   const { refund } = detail;
   if (!refund) {
     const reason = detail.refund_error ? `: ${detail.refund_error}` : '';
@@ -723,6 +770,13 @@ function confirmRefundLine(
     detail.type === 'ausserordentlich' && decision.importantReasonAccepted
       ? ' Der Betrag rechnet mit der Umdeutung; mit anerkanntem Grund rechnet der Server beim Bestätigen neu (Stichtag = Zugang).'
       : '';
+
+  if (decision.treatAsCancellation) {
+    return {
+      kind: 'note',
+      text: `Erstattung rechnet der Server beim Bestätigen als Kündigung neu (Stichtag ${formatGermanDate(detail.effective_date.recalculated)}). Wird beim Bestätigen NICHT ausgelöst, danach: ${refundCommand(detail.id)}.`,
+    };
+  }
 
   if (decision.treatAsWithdrawal) {
     return {
@@ -743,13 +797,44 @@ export interface ConfirmationOptions {
   importantReasonAccepted?: boolean;
   /** --als-widerruf (treat_as_withdrawal) */
   treatAsWithdrawal?: boolean;
+  /** --verspaeteten-widerruf-anerkennen (accept_late_withdrawal) */
+  acceptLateWithdrawal?: boolean;
+  /** --als-kuendigung (treat_as_cancellation) */
+  treatAsCancellation?: boolean;
   /** YYYY-MM-DD, für den Vergleich „Wirksamkeitsdatum liegt heute oder früher“ */
   today?: string;
+}
+
+interface ConfirmationDecision {
+  importantReasonAccepted: boolean;
+  treatAsWithdrawal: boolean;
+  acceptLateWithdrawal: boolean;
+  treatAsCancellation: boolean;
 }
 
 /** Entscheidungen, die der Server mit 422 unprocessable ablehnt; null, wenn die Kombination passt. */
 function unprocessableDecision(detail: CancellationRequestDetail, options: ConfirmationOptions): string | null {
   const label = `Kündigung #${detail.id}`;
+  const withdrawalDecision = options.acceptLateWithdrawal || options.treatAsCancellation;
+
+  if (withdrawalDecision && detail.type !== 'widerruf') {
+    return `--verspaeteten-widerruf-anerkennen und --als-kuendigung gelten nur für einen erklärten Widerruf, ${label} ist „${detail.type_label}“.`;
+  }
+  if (options.acceptLateWithdrawal && options.treatAsCancellation) {
+    return '--verspaeteten-widerruf-anerkennen und --als-kuendigung schließen sich aus.';
+  }
+  if (options.acceptLateWithdrawal && !hasWarning(detail.warnings, WARNING.withdrawalPeriodExtendedPossible)) {
+    return hasWarning(detail.warnings, WARNING.businessCustomer)
+      ? `${label} betrifft einen Firmenpass: kein Widerrufsrecht, nur --als-kuendigung.`
+      : `--verspaeteten-widerruf-anerkennen geht nur bei Warnung withdrawal_period_extended_possible (nach 14 Tagen, innerhalb von 12 Monaten und 14 Tagen).`;
+  }
+  const needsDecision = WITHDRAWAL_DECISION_WARNINGS.some((code) => hasWarning(detail.warnings, code));
+  if (needsDecision && !withdrawalDecision) {
+    const options = hasWarning(detail.warnings, WARNING.withdrawalPeriodExtendedPossible)
+      ? '--verspaeteten-widerruf-anerkennen (voll erstatten) oder --als-kuendigung'
+      : '--als-kuendigung (oder reject --unzulaessig=widerruf-ausgeschlossen)';
+    return `${label} ist ein Widerruf nach Fristablauf bzw. zu einem Firmenpass und braucht eine Entscheidung: ${options}.`;
+  }
 
   if (options.importantReasonAccepted && options.treatAsWithdrawal) {
     return '--wichtiger-grund-anerkannt und --als-widerruf schließen sich aus.';
@@ -773,6 +858,12 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
   const label = `Kündigung #${detail.id}`;
   const importantReasonAccepted = options.importantReasonAccepted === true;
   const treatAsWithdrawal = options.treatAsWithdrawal === true;
+  const decision: ConfirmationDecision = {
+    importantReasonAccepted,
+    treatAsWithdrawal,
+    acceptLateWithdrawal: options.acceptLateWithdrawal === true,
+    treatAsCancellation: options.treatAsCancellation === true,
+  };
   const today = options.today ?? new Date().toISOString().slice(0, 10);
 
   if (detail.status === 'confirmed') {
@@ -869,7 +960,7 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
     };
   }
 
-  const outcome = effectiveOutcome(detail, { importantReasonAccepted, treatAsWithdrawal });
+  const outcome = effectiveOutcome(detail, decision);
   if (detail.pass && !outcome.immediate && !outcome.date) {
     const error = detail.effective_date.recalculation_error ?? 'Wirksamkeitsdatum nicht berechenbar';
     const alternative =
@@ -897,7 +988,7 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
 
   lines.push(
     { kind: 'action', text: `Bestätigungsmail an ${detail.participant.email}.` },
-    confirmRefundLine(detail, { importantReasonAccepted, treatAsWithdrawal })
+    confirmRefundLine(detail, decision)
   );
 
   if (options.adminNotes) {
@@ -909,6 +1000,7 @@ export function buildConfirmationPreview(detail: CancellationRequestDetail, opti
     WARNING.importantReasonDecisionRequired,
     WARNING.bundleSubscription,
     ...(treatAsWithdrawal ? [WARNING.withdrawalPossible] : []),
+    ...(decision.acceptLateWithdrawal || decision.treatAsCancellation ? WITHDRAWAL_DECISION_WARNINGS : []),
   ];
   lines.push(...warningLines(detail.warnings, decided), EXECUTE_HINT);
   return { changesState: true, lines };
@@ -1321,7 +1413,7 @@ export function buildActionResultLines(response: CancellationActionResponse): Pr
 export const ERROR_CODE_HINTS: Record<string, string> = {
   conflict: 'Die Anfrage ist schon anders bearbeitet. Status mit show <id> prüfen.',
   unprocessable:
-    'Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht außerordentlicher Kündigung, --als-widerruf außerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer Kündigung oder einem fristgerechten Widerruf, oder keine Erstattung berechenbar.',
+    'Die Entscheidung passt nicht zur Anfrage, z. B. --wichtiger-grund-anerkannt bei nicht außerordentlicher Kündigung, --als-widerruf außerhalb der 14 Tage nach Kauf oder bei einem Firmenpass, beide Flags zusammen, --unzulaessig=widerruf-ausgeschlossen bei einer Kündigung oder einem fristgerechten Widerruf, ein Widerruf nach Fristablauf bzw. zu einem Firmenpass ohne --verspaeteten-widerruf-anerkennen oder --als-kuendigung, oder keine Erstattung berechenbar.',
   bundle_subscription_ambiguous:
     'Das Stripe-Abo bezahlt auch Pässe aus einem anderen Kauf. Erst in Stripe klären, welcher Vertrag endet, dann erneut bestätigen.',
   company_multi_seat_subscription: COMPANY_MULTI_SEAT_TEXT,

@@ -166,6 +166,8 @@ lernplattform kuendigungen zuordnen 31 --env=production --pass=1954 --force
 lernplattform kuendigungen confirm 12 --env=production                               # Vorschau
 lernplattform kuendigungen confirm 12 --env=production --wichtiger-grund-anerkannt   # Vorschau: außerordentlich mit sofortiger Wirkung
 lernplattform kuendigungen confirm 12 --env=production --als-widerruf                # Vorschau: als Widerruf behandeln (nur Verbraucher)
+lernplattform kuendigungen confirm 41 --env=production --verspaeteten-widerruf-anerkennen   # Widerruf nach 14 Tagen anerkennen (WIDERRUF-VERSPAETET)
+lernplattform kuendigungen confirm 41 --env=production --als-kuendigung             # Widerruf als Kündigung behandeln (auch FIRMENKUNDE-WIDERRUF)
 lernplattform kuendigungen confirm 12 --env=production --notiz="Telefonisch geklärt" --force
 # Ablehnen nur bei unzulässiger Erklärung, eine wirksame Kündigung wird bestätigt:
 lernplattform kuendigungen reject 12 --env=production --unzulaessig=duplikat --grund="Bereits am 18.09. gekündigt"          # Vorschau

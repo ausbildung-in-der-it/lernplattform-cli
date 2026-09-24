@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { EXIT_API, EXIT_OK, EXIT_USAGE, executeKuendigungen } from '../../src/commands/kuendigungen';
 import { createPalette } from '../../src/admin/cancellation-format';
-import { cancellationDetail, confirmedDetail, executionWith, refundWith, restoreFetch, stubFetch, unmatchedDetail } from './fixtures';
+import { cancellationDetail, confirmedDetail, executionWith, refundWith, restoreFetch, stubFetch, unmatchedDetail, lateWithdrawalDetail } from './fixtures';
 
 const ENV = { LERNPLATTFORM_BASE_URL: 'http://127.0.0.1:8124', LERNPLATTFORM_ADMIN_TOKEN: 'secret-token', LERNPLATTFORM_ENV: 'production' };
 
@@ -639,5 +639,83 @@ describe('lernplattform kuendigungen', () => {
     const payload = lastStderrJson(result.stderr.slice(result.stderr.indexOf('\n{') + 1));
     assert.equal(payload.code, 'duplicate');
     assert.match(String(payload.hint), /--unzulaessig=duplikat/);
+  });
+
+  it('confirm on a late withdrawal without decision previews the 422 and names both options', async () => {
+    stubFetch(() => ({ status: 200, body: { data: lateWithdrawalDetail() } }));
+
+    const result = await execute(['confirm', '41', '--json']);
+
+    const preview = JSON.parse(result.stdout);
+    assert.equal(preview.changes_state, false);
+    assert.match(preview.lines[0].text, /--verspaeteten-widerruf-anerkennen \(voll erstatten\) oder --als-kuendigung/);
+  });
+
+  it('list shows the withdrawal decision warnings as critical short codes', async () => {
+    stubFetch(() => ({
+      status: 200,
+      body: {
+        data: [
+          {
+            id: 41, type: 'widerruf', type_label: 'Widerruf', status: 'pending', status_label: 'Ausstehend',
+            received_at: '2026-09-24T10:00:00+02:00', age_days: 0, effective_date: null,
+            participant_name: 'Mia Muster', participant_email: 'mia@example.com', pass_name: 'IT-Pass 12 Monate',
+            payment_mode: 'one_time', refund_status: 'none',
+            warnings: [{ code: 'withdrawal_period_extended_possible', message: '…' }, { code: 'business_customer', message: '…' }, { code: 'withdrawal_period_expired', message: '…' }],
+          },
+        ],
+        meta: { current_page: 1, last_page: 1, per_page: 25, total: 1, status: 'pending' },
+      },
+    }));
+
+    const result = await execute(['list']);
+
+    assert.match(result.stdout, /WIDERRUF-VERSPAETET, FIRMENKUNDE-WIDERRUF, WIDERRUF-FRIST-ABGELAUFEN/);
+  });
+
+  it('confirm --verspaeteten-widerruf-anerkennen previews full refund and posts accept_late_withdrawal', async () => {
+    stubFetch(() => ({ status: 200, body: { data: lateWithdrawalDetail() } }));
+    const preview = await execute(['confirm', '41', '--verspaeteten-widerruf-anerkennen']);
+    assert.match(preview.stdout, /Verspäteter Widerruf wird anerkannt \(§ 356 Abs\. 3 BGB/);
+    restoreFetch();
+
+    const confirmed = cancellationDetail({ id: 41, status: 'confirmed', status_label: 'Bestätigt', type: 'widerruf', type_label: 'Widerruf', warnings: [] });
+    const calls = stubFetch(() => ({ status: 200, body: { data: confirmed, meta: { result: 'confirmed' } } }));
+    const result = await execute(['confirm', '41', '--verspaeteten-widerruf-anerkennen', '--force']);
+
+    assert.equal(result.exitCode, EXIT_OK);
+    assert.deepEqual(JSON.parse(calls[0].body ?? ''), { accept_late_withdrawal: true });
+  });
+
+  it('confirm --als-kuendigung previews the ordinary date and posts treat_as_cancellation', async () => {
+    stubFetch(() => ({ status: 200, body: { data: lateWithdrawalDetail() } }));
+    const preview = await execute(['confirm', '41', '--als-kuendigung']);
+    assert.match(preview.stdout, /als ordentliche Kündigung behandelt \(§ 140 BGB\): wirksam zum 01\.12\.2026/);
+    restoreFetch();
+
+    const confirmed = cancellationDetail({ id: 41, status: 'confirmed', status_label: 'Bestätigt', warnings: [] });
+    const calls = stubFetch(() => ({ status: 200, body: { data: confirmed, meta: { result: 'confirmed' } } }));
+    await execute(['confirm', '41', '--als-kuendigung', '--force']);
+
+    assert.deepEqual(JSON.parse(calls[0].body ?? ''), { treat_as_cancellation: true });
+  });
+
+  it('confirm refuses late acceptance for a company pass in the preview', async () => {
+    stubFetch(() => ({
+      status: 200,
+      body: { data: lateWithdrawalDetail({ warnings: [{ code: 'business_customer', message: 'Firmenpass' }] }) },
+    }));
+
+    const result = await execute(['confirm', '41', '--verspaeteten-widerruf-anerkennen', '--json']);
+
+    const preview = JSON.parse(result.stdout);
+    assert.equal(preview.changes_state, false);
+    assert.match(preview.lines[0].text, /Firmenpass: kein Widerrufsrecht, nur --als-kuendigung/);
+  });
+
+  it('confirm rejects both withdrawal decisions at once as usage error', async () => {
+    const result = await execute(['confirm', '41', '--verspaeteten-widerruf-anerkennen', '--als-kuendigung']);
+
+    assert.equal(result.exitCode, EXIT_USAGE);
   });
 });

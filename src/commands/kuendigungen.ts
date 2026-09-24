@@ -4,7 +4,7 @@
  * Usage:
  *   lernplattform kuendigungen list [--status=pending|confirmed|rejected|withdrawn|all] [--nicht-zugeordnet] [--page=N] [--per-page=N] [--json]
  *   lernplattform kuendigungen show <id> [--json]
- *   lernplattform kuendigungen confirm <id> [--wichtiger-grund-anerkannt] [--notiz="..."] [--force] [--json]
+ *   lernplattform kuendigungen confirm <id> [--wichtiger-grund-anerkannt | --als-widerruf | --verspaeteten-widerruf-anerkennen | --als-kuendigung] [--notiz="..."] [--force] [--json]
  *   lernplattform kuendigungen reject <id> --unzulaessig=<art> --grund="..." [--force] [--json]
  *   lernplattform kuendigungen refund <id> [--force] [--json]
  *   lernplattform kuendigungen zuordnen <id> --pass=<user_pass_id> [--force] [--json]
@@ -75,7 +75,7 @@ const COMMON_FLAGS = ['env', 'json', 'help'];
 const ALLOWED_FLAGS: Record<string, string[]> = {
   list: [...COMMON_FLAGS, 'status', 'page', 'per-page', 'nicht-zugeordnet'],
   show: [...COMMON_FLAGS],
-  confirm: [...COMMON_FLAGS, 'notiz', 'notiz-stdin', 'notiz-base64', 'wichtiger-grund-anerkannt', 'als-widerruf', 'force'],
+  confirm: [...COMMON_FLAGS, 'notiz', 'notiz-stdin', 'notiz-base64', 'wichtiger-grund-anerkannt', 'als-widerruf', 'verspaeteten-widerruf-anerkennen', 'als-kuendigung', 'force'],
   reject: [...COMMON_FLAGS, 'unzulaessig', 'grund', 'grund-stdin', 'grund-base64', 'force'],
   refund: [...COMMON_FLAGS, 'force'],
   zuordnen: [...COMMON_FLAGS, 'pass', 'force'],
@@ -86,6 +86,8 @@ const WRITE_OPERATIONS = ['confirm', 'reject', 'refund', 'zuordnen'];
 
 const IMPORTANT_REASON_FLAG = 'wichtiger-grund-anerkannt';
 const TREAT_AS_WITHDRAWAL_FLAG = 'als-widerruf';
+const ACCEPT_LATE_WITHDRAWAL_FLAG = 'verspaeteten-widerruf-anerkennen';
+const TREAT_AS_CANCELLATION_FLAG = 'als-kuendigung';
 
 // ============================================================================
 // Eingaben prüfen
@@ -200,18 +202,24 @@ async function confirm(client: AdminApiClient, args: ParsedArgs, io: CommandIo, 
   const adminNotes = readText(args, 'notiz', false);
   const importantReasonAccepted = switchFlag(args, IMPORTANT_REASON_FLAG);
   const treatAsWithdrawal = switchFlag(args, TREAT_AS_WITHDRAWAL_FLAG);
+  const acceptLateWithdrawal = switchFlag(args, ACCEPT_LATE_WITHDRAWAL_FLAG);
+  const treatAsCancellation = switchFlag(args, TREAT_AS_CANCELLATION_FLAG);
   if (importantReasonAccepted && treatAsWithdrawal) {
     throw new AdminUsageError(`--${IMPORTANT_REASON_FLAG} und --${TREAT_AS_WITHDRAWAL_FLAG} schließen sich aus (Server: 422).`);
   }
+  if (acceptLateWithdrawal && treatAsCancellation) {
+    throw new AdminUsageError(`--${ACCEPT_LATE_WITHDRAWAL_FLAG} und --${TREAT_AS_CANCELLATION_FLAG} schließen sich aus (Server: 422).`);
+  }
+  const decision = { adminNotes, importantReasonAccepted, treatAsWithdrawal, acceptLateWithdrawal, treatAsCancellation };
 
   if (!isForce(args)) {
     const { data: detail } = await getCancellationRequest(client, id);
-    const preview = buildConfirmationPreview(detail, { adminNotes, importantReasonAccepted, treatAsWithdrawal });
+    const preview = buildConfirmationPreview(detail, decision);
     writePreview(io, args, target, preview.changesState, preview.lines, detail);
     return;
   }
 
-  const response = await confirmCancellationRequest(client, id, { adminNotes, importantReasonAccepted, treatAsWithdrawal });
+  const response = await confirmCancellationRequest(client, id, decision);
   writeResult(io, args, response, buildActionResultLines(response));
 }
 
@@ -454,6 +462,12 @@ FLAGS
                              Zugang und Abo enden sofort. Nur bei Eingang innerhalb von 14 Tagen nach dem
                              Kauf (Warnung widerruf-moeglich), nur für Verbraucher (nie Firmenpass),
                              nicht zusammen mit --wichtiger-grund-anerkannt.
+    --verspaeteten-widerruf-anerkennen  Nur Widerruf mit Warnung WIDERRUF-VERSPAETET (nach 14 Tagen, innerhalb
+                             von 12 Monaten und 14 Tagen): als Widerruf anerkennen, Belehrung möglicherweise
+                             mangelhaft (§ 356 Abs. 3 BGB). Volle Erstattung, endet mit Zugang.
+    --als-kuendigung         Nur Widerruf mit Warnung WIDERRUF-VERSPAETET, WIDERRUF-FRIST-ABGELAUFEN oder
+                             FIRMENKUNDE-WIDERRUF: als ordentliche Kündigung zum nächstmöglichen Termin
+                             behandeln (§ 140 BGB). Ohne eine der beiden Entscheidungen antwortet der Server 422.
     --notiz="…"              Interne Admin-Notiz (admin_notes, max ${MAX_TEXT_LENGTH} Zeichen)
     --force                  Wirklich ausführen
   reject:
@@ -516,6 +530,13 @@ ERGEBNIS- UND FEHLERCODES (stderr-JSON: "code" und "hint")
                 möglich, bereits erstattete Anteile werden nicht doppelt gezahlt)
 
 WARNUNGEN (Kurzcodes in der list-Tabelle, Klartext in show und in der Vorschau; VERSALIEN = kritisch)
+  WIDERRUF-VERSPAETET      withdrawal_period_extended_possible: Widerruf nach 14 Tagen, aber innerhalb von
+                           12 Monaten und 14 Tagen. Belehrung ggf. mangelhaft: confirm
+                           --verspaeteten-widerruf-anerkennen oder --als-kuendigung
+  WIDERRUF-FRIST-ABGELAUFEN withdrawal_period_expired: auch die verlängerte Frist ist vorbei. confirm
+                           --als-kuendigung oder reject --unzulaessig=widerruf-ausgeschlossen
+  FIRMENKUNDE-WIDERRUF     business_customer: Widerruf zu einem Firmenpass, kein Widerrufsrecht. confirm
+                           --als-kuendigung oder reject --unzulaessig=widerruf-ausgeschlossen
   NICHT-ZUGEORDNET         unmatched: über den Kündigungsbutton eingegangen, kein eindeutiger Vertrag.
                            Wirkt trotzdem ab Eingang. Bestätigen gesperrt: show <id> (Kandidaten), dann
                            zuordnen <id> --pass=N; ohne Vertrag reject --unzulaessig=falscher-vertrag
